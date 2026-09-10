@@ -710,7 +710,7 @@ requires-dist = [
     { name = "confluent-kafka", marker = "extra == 'dbt'", specifier = ">=2.4.0" },
     { name = "confluent-kafka", extras = ["avro", "schema-registry"], marker = "extra == 'kafka'", specifier = ">=2.4.0" },
     { name = "confluent-sql", marker = "extra == 'flink'", specifier = ">=0.4.0" },
-    { name = "dbt-confluent", marker = "extra == 'dbt'", specifier = ">=0.3.0" },
+    { name = "dbt-confluent", marker = "extra == 'dbt'", specifier = ">=0.3.1" },
     { name = "dbt-core", marker = "extra == 'dbt'", specifier = ">=1.9.0" },
     { name = "flink-tools-for-agents", extras = ["flink", "kafka", "dbt"], marker = "extra == 'all'" },
     { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.6.0" },

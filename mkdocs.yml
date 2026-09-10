@@ -5,11 +5,12 @@ copyright: Copyright &copy; 2024 - 2026 Jerome Boyer
 
 nav:
   - Home: index.md
+  - Methodology:
+    - Day-today data engineering: https://jbcodeforce.github.io/flink-studies/methodology/data_eng_101/
   - Flink Deploy:
     - Overview: flink/index.md
-  - Manifest:
-    - Overview: manifest/index.md
-  - dbt Migrate:
+    - Manifest: manifest/index.md
+  - dbt Projects:
     - Overview: dbt/index.md
   - Kafka & Schema Registry:
     - Overview: kafka/index.md
@@ -18,6 +19,8 @@ nav:
 
 theme:
   name: material
+  logo: images/flink-header-logo.svg
+  favicon: images/logo-blue.drawio.png
   palette:
     - scheme: default
       primary: deep purple
@@ -37,7 +40,7 @@ theme:
     - navigation.expand
     - content.code.copy
     - content.code.annotate
-
+extra_css: ["extra.css"]
 markdown_extensions:
   - admonition
   - pymdownx.highlight:
