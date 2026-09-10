@@ -38,7 +38,7 @@ lint-fix:
 
 # ── Documentation ─────────────────────────────────────────────────────────────
 docs:
-	uv run mkdocs serve
+	uv run mkdocs serve --dev-addr localhost:8004 --livereload
 
 docs-build:
 	uv run mkdocs build --strict

@@ -2,8 +2,9 @@
 
 ## Repository Overview
 
-This repository consolidates production-quality, reusable CLI tools for managing Apache Flink SQL
+This repository contains reusable CLI tools for managing Confluent Cloud Flink SQL projects, 
 deployments, dbt streaming model migrations, and Kafka/Schema Registry operations on Confluent Cloud.
+
 Each tool domain is packaged as a Python module under `tools/` and backed by a Bob/Claude agent
 skill under `skills/`, enabling AI agents to invoke the tools via shell commands.
 
