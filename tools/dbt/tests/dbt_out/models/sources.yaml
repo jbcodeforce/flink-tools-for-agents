@@ -1,0 +1,13 @@
+version: 2
+sources:
+- name: cc_flink
+  tables:
+  - name: employees
+    identifier: employees
+    columns:
+    - name: emp_id
+      data_type: INT
+    - name: name
+      data_type: VARCHAR
+    - name: dept_id
+      data_type: INT

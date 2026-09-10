@@ -1,0 +1,22 @@
+foundations:
+- table_name: c
+  ddl_for_test: ./tests/ddl_c.sql
+test_suite:
+- name: test_e_1
+  inputs:
+  - table_name: c
+    file_name: ./tests/insert_c_1.sql
+    file_type: sql
+  outputs:
+  - table_name: e
+    file_name: ./tests/validate_e_1.sql
+    file_type: sql
+- name: test_e_2
+  inputs:
+  - table_name: c
+    file_name: ./tests/insert_c_2.csv
+    file_type: csv
+  outputs:
+  - table_name: e
+    file_name: ./tests/validate_e_2.sql
+    file_type: sql

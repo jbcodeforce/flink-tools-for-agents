@@ -1,0 +1,4 @@
+INSERT INTO y
+SELECT 
+*
+FROM src_y
