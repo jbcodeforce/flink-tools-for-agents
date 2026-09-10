@@ -1,0 +1,50 @@
+# Using Skills with Bob / Claude
+
+The `skills/` directory contains `SKILL.md` files that teach Bob/Claude agents how to invoke
+the CLI tools in this repository via shell commands.
+
+## Available Skills
+
+| Skill | File | Covers |
+|-------|------|--------|
+| `flink-deploy` | `skills/flink-deploy/SKILL.md` | Deploy/undeploy Flink statements, snapshot/streaming queries |
+| `manifest` | `skills/manifest/SKILL.md` | Generate `deploy_manifest.json` |
+| `dbt-migrate` | `skills/dbt-migrate/SKILL.md` | Migrate Flink DML → dbt, scaffold dbt projects |
+| `kafka` | `skills/kafka/SKILL.md` | Schema Registry, table cleanup |
+
+## Installing Skills in Bob
+
+Copy or symlink the skills directory into your Bob workspace:
+
+```bash
+# Option 1: symlink the whole skills directory
+ln -s /path/to/flink-tools-for-agents/skills ~/.bob/skills/flink-tools
+
+# Option 2: copy individual skills
+cp -r skills/flink-deploy ~/.bob/skills/
+cp -r skills/manifest ~/.bob/skills/
+cp -r skills/dbt-migrate ~/.bob/skills/
+cp -r skills/kafka ~/.bob/skills/
+```
+
+## How Skills Work
+
+Each skill instructs Bob to invoke the tools via `uv run` shell commands. The skill handles:
+
+1. **Credential setup** — checking required env vars are set before invoking any tool
+2. **Workflow guidance** — step-by-step instructions (e.g. generate manifest → deploy)
+3. **Error interpretation** — common error patterns and their resolutions
+4. **Dry-run first** — always suggests `--dry-run` before write operations
+
+## Trigger Phrases
+
+Each skill activates on specific phrases. Examples:
+
+| Phrase | Skill triggered |
+|--------|----------------|
+| "deploy my Flink SQL" | `flink-deploy` |
+| "generate a deploy manifest" | `manifest` |
+| "migrate my DML to dbt" | `dbt-migrate` |
+| "scaffold a dbt project" | `dbt-migrate` |
+| "register my Avro schema" | `kafka` |
+| "clean up Flink tables" | `kafka` |

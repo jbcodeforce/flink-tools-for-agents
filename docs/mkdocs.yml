@@ -1,0 +1,58 @@
+site_name: Flink Tools for Agents
+repo_url: https://github.com/jbcodeforce/flink-tools-for-agents
+site_url: https://jbcodeforce.github.io/flink-tools-for-agents
+copyright: Copyright &copy; 2024 - 2026 Jerome Boyer
+
+nav:
+  - Home: index.md
+  - Flink Deploy:
+    - Overview: flink/index.md
+  - Manifest:
+    - Overview: manifest/index.md
+  - dbt Migrate:
+    - Overview: dbt/index.md
+  - Kafka & Schema Registry:
+    - Overview: kafka/index.md
+  - Skills:
+    - Using Skills with Bob/Claude: skills/index.md
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+docs_dir: docs
+site_dir: site
