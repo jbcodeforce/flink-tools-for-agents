@@ -6,7 +6,9 @@ copyright: Copyright &copy; 2024 - 2026 Jerome Boyer
 nav:
   - Home: index.md
   - Methodology:
-    - Day-today data engineering: https://jbcodeforce.github.io/flink-studies/methodology/data_eng_101/
+    - Day-to-day with the agents: methodology/index.md
+    - Day-to-day DE methodology: https://jbcodeforce.github.io/flink-studies/methodology/data_eng_101/
+    - dbt summary: https://jbcodeforce.github.io/flink-studies/coding/dbt/#confluent-cloud-flink-specifics
   - Flink Deploy:
     - Overview: flink/index.md
     - Manifest: manifest/index.md
@@ -35,19 +37,26 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
   features:
-    - navigation.tabs
+    # - navigation.tabs
     - navigation.sections
     - navigation.expand
+    - search.suggest
+    - search.highlight
     - content.code.copy
     - content.code.annotate
+    - content.tooltips
+    - content.tabs.link
 extra_css: ["extra.css"]
 markdown_extensions:
   - admonition
+  - pymdownx.blocks.caption
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
+  - pymdownx.caret
   - pymdownx.superfences
+  - pymdownx.details
   - pymdownx.tabbed:
       alternate_style: true
   - tables
@@ -59,3 +68,9 @@ plugins:
 
 docs_dir: docs
 site_dir: site
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: 'https://github.com/jbcodeforce'
+    - icon: fontawesome/brands/linkedin
+      link: 'https://linkedin.com/in/jeromeboyer'

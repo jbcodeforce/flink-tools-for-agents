@@ -1,7 +1,6 @@
 # Manifest Tools
 
-Generate `deploy_manifest.json` files that describe how Flink SQL statements should be deployed
-in groups and in what order.
+Generate `deploy_manifest.json` files that describe how Flink SQL statements should be deployed in groups and in what order.
 
 ## Entry Points
 

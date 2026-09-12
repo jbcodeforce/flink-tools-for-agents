@@ -1,9 +1,9 @@
 ---
-name: dbt-migrate
+name: dbt-project
 description: Use when the user wants to migrate Flink SQL DML statements to dbt streaming models, scaffold a new shift-left dbt project, add data products or tables to an existing dbt project, or generate dbt YAML from SQL files or Confluent Schema Registry schemas.
 ---
 
-# dbt Migration and Scaffolding Skill
+# dbt Flink SQL Migration and dbt project Scaffolding Skill
 
 This skill guides you through converting Flink SQL into dbt streaming models, and scaffolding
 or managing shift-left dbt projects, using the CLI tools from **flink-tools-for-agents**.

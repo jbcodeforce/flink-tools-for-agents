@@ -2,7 +2,7 @@
 
 Reusable CLI tools and Bob/Claude agent skills for managing Confluent Cloud Flink projects, SQL statements, dbt confluent projects, and Kafka on Confluent Cloud.
 
-## Quick Start
+## Quick Start For Developers
 
 ```bash
 # Install all domains
@@ -21,11 +21,10 @@ uv run flink-sql-register --help
 
 - [Flink Deploy](flink/index.md) — deploy/undeploy Flink SQL statements, snapshot & streaming queries using [python confluent-sql]()
 - [Manifest](manifest/index.md) — generate deployment manifests from SQL dirs or dbt projects
-- [dbt Migrate](dbt/index.md) — convert Flink DML to dbt models, scaffold dbt projects
+- [dbt flink project management](dbt/index.md) — convert Flink DML to dbt models, scaffold and manage Flink projects
 - [Kafka & Schema Registry](kafka/index.md) — register schemas, manage topics and Flink tables
 
 ## Using the Skills
 
 See [Skills for Bob/Claude](skills/index.md) for instructions on installing and using the agent skills.
 
-## Example of Prompts

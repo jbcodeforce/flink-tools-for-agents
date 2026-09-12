@@ -29,7 +29,7 @@ def cli_runner() -> CliRunner:
 
 def test_cli_dry_run(cli_runner: CliRunner) -> None:
     dbt_project_path = tests_path / "dbt_out"
-    target_path : Path = dbt_project_path / "models" / "employees"
+    target_path : Path = dbt_project_path / "models" / "hr" / "employees"
     result = cli_runner.invoke(
         app,
         ["migrate-one-file", str(BASIC_PATH / "dml.employee_count.sql"), str(target_path), "--dbt-project-dir", dbt_project_path],
@@ -45,7 +45,7 @@ def test_cli_dry_run(cli_runner: CliRunner) -> None:
 
 def test_cli_write(cli_runner: CliRunner) -> None:
     dbt_project_path = tests_path / "dbt_out"
-    target_path : Path = dbt_project_path / "models" / "employee"
+    target_path : Path = dbt_project_path / "models" / "crm" / "employees"
    
     result = cli_runner.invoke(
         app,

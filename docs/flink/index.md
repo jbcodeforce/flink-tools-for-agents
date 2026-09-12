@@ -1,6 +1,6 @@
 # Flink Deploy Tools
 
-Deploy, undeploy, and query Flink SQL statements on Confluent Cloud using a manifest-driven workflow.
+Deploy, undeploy, and query Flink SQL statements on Confluent Cloud using a manifest-driven workflow. It can work for dbt project or simple project with a list of flink SQL ddl and dml files.
 
 ## Entry Points
 
@@ -29,35 +29,35 @@ CLOUD_REGION=<region>
 ### Deploy a group
 
 ```bash
-flink-sql-deploy --sql-dir ./my-pipeline deploy --group sources
-flink-sql-deploy --sql-dir ./my-pipeline deploy --group facts
+uv run flink-sql-deploy --sql-dir ./my-pipeline deploy --group sources
+uv run flink-sql-deploy --sql-dir ./my-pipeline deploy --group facts
 ```
 
 ### Undeploy a group
 
 ```bash
-flink-sql-deploy --sql-dir ./my-pipeline undeploy --group facts
-flink-sql-deploy --sql-dir ./my-pipeline undeploy --group sources --no-drop-tables
+uv run flink-sql-deploy --sql-dir ./my-pipeline undeploy --group facts
+uv run flink-sql-deploy --sql-dir ./my-pipeline undeploy --group sources --no-drop-tables
 ```
 
 ### List groups in a manifest
 
 ```bash
-flink-sql-deploy --sql-dir ./my-pipeline groups
+uv run flink-sql-deploy --sql-dir ./my-pipeline groups
 ```
 
 ### Snapshot query
 
 ```bash
-flink-sql-snapshot --table orders --output table --limit 20
-flink-sql-snapshot --sql "SELECT count(*) FROM orders" --output json
+uv run flink-sql-snapshot --table orders --output table --limit 20
+uv run flink-sql-snapshot --sql "SELECT count(*) FROM orders" --output json
 ```
 
 ### Streaming query
 
 ```bash
-flink-sql-stream --table orders --max-rows 50
-flink-sql-stream --sql "SELECT * FROM orders WHERE amount > 100" --output csv
+uv run flink-sql-stream --table orders --max-rows 50
+uv run flink-sql-stream --sql "SELECT * FROM orders WHERE amount > 100" --output csv
 ```
 
 ## Manifest Format

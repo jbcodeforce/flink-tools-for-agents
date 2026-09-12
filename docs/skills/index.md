@@ -9,7 +9,7 @@ the CLI tools in this repository via shell commands.
 |-------|------|--------|
 | `flink-deploy` | `skills/flink-deploy/SKILL.md` | Deploy/undeploy Flink statements, snapshot/streaming queries |
 | `manifest` | `skills/manifest/SKILL.md` | Generate `deploy_manifest.json` |
-| `dbt-migrate` | `skills/dbt-migrate/SKILL.md` | Migrate Flink DML → dbt, scaffold dbt projects |
+| `dbt-project` | `skills/dbt-project/SKILL.md` | Migrate Flink DML → dbt, scaffold dbt projects |
 | `kafka` | `skills/kafka/SKILL.md` | Schema Registry, table cleanup |
 
 ## Installing Skills in Bob
@@ -17,15 +17,14 @@ the CLI tools in this repository via shell commands.
 Copy or symlink the skills directory into your Bob workspace:
 
 ```bash
-# Option 1: symlink the whole skills directory
-ln -s /path/to/flink-tools-for-agents/skills ~/.bob/skills/flink-tools
-
-# Option 2: copy individual skills
-cp -r skills/flink-deploy ~/.bob/skills/
-cp -r skills/manifest ~/.bob/skills/
-cp -r skills/dbt-migrate ~/.bob/skills/
-cp -r skills/kafka ~/.bob/skills/
+./scripts/link-skills.sh ~/.bob/skills
+# OR
+./scripts/link-skills.sh ~/.claude/skills
+# other harnesses compatible with skill spec
+./scripts/link-skills.sh ~/.agents/skills
 ```
+
+Reload Bob, or start claude, pi...
 
 ## How Skills Work
 
@@ -44,7 +43,7 @@ Each skill activates on specific phrases. Examples:
 |--------|----------------|
 | "deploy my Flink SQL" | `flink-deploy` |
 | "generate a deploy manifest" | `manifest` |
-| "migrate my DML to dbt" | `dbt-migrate` |
-| "scaffold a dbt project" | `dbt-migrate` |
+| "migrate my DML to dbt" | `dbt-project` |
+| "scaffold a dbt project" | `dbt-project` |
 | "register my Avro schema" | `kafka` |
 | "clean up Flink tables" | `kafka` |

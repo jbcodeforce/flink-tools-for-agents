@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: crm
+    description: ""
+
+  - name: src_customers
+    description: >
+      Deduplicates raw customer records from the CRM source, keeping the latest
+      row per customer_id ordered by updated_at.
+    columns:
+      - name: customer_id
+        description: Primary key — unique customer identifier.
+      - name: first_name
+      - name: last_name
+      - name: email
+      - name: phone
+      - name: address
+      - name: created_at
+      - name: updated_at
