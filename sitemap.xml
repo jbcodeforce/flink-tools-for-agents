@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/dbt/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/flink/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/kafka/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/manifest/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/methodology/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+    <url>
+         <loc>https://jbcodeforce.github.io/flink-tools-for-agents/skills/</loc>
+         <lastmod>2026-09-16</lastmod>
+    </url>
+</urlset>
