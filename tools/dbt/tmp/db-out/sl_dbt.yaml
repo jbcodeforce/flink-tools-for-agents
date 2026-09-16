@@ -1,3 +1,0 @@
-pipelines_dir: pipelines
-project_type: data-product
-dbt_profile_name: cc_flink

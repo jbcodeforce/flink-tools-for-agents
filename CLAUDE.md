@@ -1,8 +1,5 @@
 @AGENTS.md
 
-# Bob Rules — flink-tools-for-agents
-
-
 ## Development Conventions
 
 - **Package manager:** always use `uv`. Never use `pip install` directly.
@@ -34,8 +31,4 @@
 - Each domain has its own page under `docs/<domain>/index.md`.
 - Run `uv run mkdocs serve` to preview; `uv run mkdocs build --strict` must pass with no warnings.
 
-## What NOT to do
-
-- Do not add demo/study-specific scripts here — those belong in `flink-studies`.
-- Do not import from `flink-studies` paths — this repo must be fully self-contained.
 

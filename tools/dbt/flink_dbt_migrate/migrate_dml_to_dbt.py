@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Annotated
 import typer
 
-from tools.dbt.flink_dbt_migrate.sl_discovery_mgr import crawl_pipeline_folder
+from tools.dbt.flink_dbt_migrate.sl_discovery_mgr import (
+    crawl_pipeline_folder,
+    load_excluded_folders,
+    _upstream_ddl_map_from_pipeline_def,
+    _find_pipelines_parent,
+)
+from tools.dbt.flink_dbt_migrate.discover_deps import build_pipelines_ddl_index
+from tools.dbt.flink_dbt_migrate.tracking_store import TrackingStore
 from tools.dbt.flink_dbt_migrate.migrate import (
     migrate_dml_to_dbt,
     migrate_values_dml_to_seed,
@@ -124,6 +131,18 @@ def migrate_sl_folder(
         bool,
         typer.Option("--force", help="Overwrite existing models and schema.yml entries"),
     ] = False,
+    exclude_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--exclude-file",
+            "-e",
+            help="Path to text file containing folder paths to exclude from migration",
+        ),
+    ] = None,
+    product: Annotated[
+        str | None,
+        typer.Option("--product", "-p", help="Filter migration to a single product by name"),
+    ] = None,
 ) -> None:
     """Crawl a shift-left pipelines folder and migrate every table to dbt.
 
@@ -133,8 +152,8 @@ def migrate_sl_folder(
         pipelines/dimensions/customer/  →  dbt_project/models/dimensions/customer/
     """
     _get_logger().info(
-        "migrate_sl_folder | pipeline_dir=%s dbt_project_dir=%s write=%s force=%s",
-        pipeline_dir, dbt_project_dir, write, force,
+        "migrate_sl_folder | pipeline_dir=%s dbt_project_dir=%s write=%s force=%s exclude_file=%s product=%s",
+        pipeline_dir, dbt_project_dir, write, force, exclude_file, product,
     )
     pipeline_dir = pipeline_dir.resolve()
     dbt_project_dir = dbt_project_dir.resolve()
@@ -143,15 +162,26 @@ def migrate_sl_folder(
         typer.echo(f"Pipeline directory not found: {pipeline_dir}", err=True)
         raise typer.Exit(1)
 
+    excluded_folders: set[Path] = set()
+    if exclude_file is not None:
+        exclude_file = exclude_file.resolve()
+        try:
+            excluded_folders = load_excluded_folders(exclude_file, base_dir=pipeline_dir)
+        except FileNotFoundError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Loaded {len(excluded_folders)} excluded folder path(s) from {exclude_file}")
+
     typer.echo(f"Crawling {pipeline_dir} ...")
-    entries = crawl_pipeline_folder(pipeline_dir)
+    entries = crawl_pipeline_folder(pipeline_dir, excluded_folders=excluded_folders, product=product)
 
     if not entries:
         typer.echo("No tables discovered (no sql_scripts/ directories with dml.*.sql found).")
         raise typer.Exit(0)
 
     # Print inventory
-    typer.echo(f"\nDiscovered {len(entries)} table(s):")
+    product_suffix = f" (filtered to product: {product})" if product else ""
+    typer.echo(f"\nDiscovered {len(entries)} table(s){product_suffix}:")
     col = max(len(e.table_name) for e in entries)
     for e in entries:
         typer.echo(f"  {e.table_name:<{col}} ({e.relative_path}) seed: {e.is_seed}")
@@ -164,9 +194,22 @@ def migrate_sl_folder(
     models_root = dbt_project_dir / "models"
     seeds_root = dbt_project_dir / "seeds"
     migrated = 0
+    skipped = 0
     failures: list[tuple[str, str]] = []
 
+    tracking_path = dbt_project_dir / "tracking.yml"
+    store = TrackingStore.load(tracking_path)
+
+    typer.echo("Building global DDL index ...")
+    global_ddl_index = build_pipelines_ddl_index(pipeline_dir)
+    typer.echo(f"Global DDL index: {len(global_ddl_index)} tables indexed.")
+
     for entry in entries:
+        if not store.should_migrate(entry, force=force):
+            skipped += 1
+            typer.echo(f"  →  {entry.table_name}: skipped (unchanged)")
+            continue
+
         if entry.is_seed:
             try:
                 seed_result = migrate_values_dml_to_seed(
@@ -181,20 +224,35 @@ def migrate_sl_folder(
                 typer.echo(
                     f"  ✓  {entry.table_name}: wrote {seed_result.csv_path.relative_to(dbt_project_dir)}"
                 )
+                store.record(
+                    entry.table_name,
+                    status="done",
+                    sha256=entry.dml_sha256,
+                    relative_path=str(entry.relative_path),
+                )
                 migrated += 1
             except Exception as exc:  # noqa: BLE001
                 failures.append((entry.table_name, str(exc)))
+                store.record(
+                    entry.table_name,
+                    status="failed",
+                    sha256=entry.dml_sha256,
+                    relative_path=str(entry.relative_path),
+                    error=str(exc),
+                )
                 typer.echo(f"  ✗  {entry.table_name}: {exc}", err=True)
             continue
 
         target_dir = models_root / entry.relative_path
         try:
             result = migrate_dml_to_dbt(
-                entry.dml_path,
-                target_dir,
+                statement_file=entry.dml_path,
+                target_dir=target_dir,
+                dbt_project_dir=dbt_project_dir,
                 ddl_file=entry.ddl_path,
                 force=force,
                 upstream_ddl_map=entry.upstream_ddl_map,
+                global_ddl_index=global_ddl_index,
             )
             target_dir.mkdir(parents=True, exist_ok=True)
             result.model_path.write_text(result.model_sql, encoding="utf-8")
@@ -203,12 +261,26 @@ def migrate_sl_folder(
             if result.sources_yml is not None and result.sources_path is not None:
                 result.sources_path.parent.mkdir(parents=True, exist_ok=True)
                 result.sources_path.write_text(result.sources_yml, encoding="utf-8")
+            store.record(
+                entry.table_name,
+                status="done",
+                sha256=entry.dml_sha256,
+                relative_path=str(entry.relative_path),
+            )
             migrated += 1
         except Exception as exc:  # noqa: BLE001
             failures.append((entry.table_name, str(exc)))
+            store.record(
+                entry.table_name,
+                status="failed",
+                sha256=entry.dml_sha256,
+                relative_path=str(entry.relative_path),
+                error=str(exc),
+            )
             typer.echo(f"  ✗  {entry.table_name}: {exc}", err=True)
 
-    typer.echo(f"\n{migrated} migrated, {len(failures)} failed.")
+    store.save(tracking_path)
+    typer.echo(f"\n{migrated} migrated, {skipped} skipped, {len(failures)} failed.")
     if failures:
         raise typer.Exit(1)
 
@@ -352,7 +424,30 @@ def migrate_one_file(
 
     ref_overrides = dict(parse_ref_table(item) for item in ref_table)
     profiles_dir = dbt_profiles_dir.expanduser() if dbt_profiles_dir else None
+
+    # Auto-load upstream DDL map from pipeline_definition.json when present.
+    # table_dir is the pipeline folder that contains sql-scripts/ (e.g. fct_user_per_group/)
+    table_dir = statement_file.resolve().parent.parent
+    pipelines_parent = _find_pipelines_parent(table_dir)
+    auto_upstream_ddl_map = _upstream_ddl_map_from_pipeline_def(table_dir, pipelines_parent)
+
+    # If target_dir doesn't already end with the pipeline folder name, append it so
+    # the dbt hierarchy mirrors the source hierarchy.
+    # e.g. models/crm  →  models/crm/fct_user_per_group
+    if target_dir.resolve().name != table_dir.name:
+        target_dir = target_dir / table_dir.name
+        _get_logger().debug(
+            "migrate_one_file | target_dir adjusted to include table folder: %s", target_dir
+        )
+
+    _get_logger().debug(
+        "migrate_one_file | auto_upstream_ddl_map=%s  effective_target_dir=%s",
+        list(auto_upstream_ddl_map.keys()), target_dir,
+    )
+
     print(f"  ref_overrides: {ref_overrides}")
+    print(f"  effective_target_dir: {target_dir}")
+    print(f"  auto_upstream_ddl_map keys: {list(auto_upstream_ddl_map.keys())}")
     print('=' * 100)
     try:
         result = migrate_dml_to_dbt(
@@ -367,6 +462,7 @@ def migrate_one_file(
             source_project_dir=source_project_dir,
             source_name=source_name,
             resolve_sources=not no_sources,
+            upstream_ddl_map=auto_upstream_ddl_map,
         )
     except (ValueError, FileNotFoundError) as exc:
         typer.echo(str(exc), err=True)

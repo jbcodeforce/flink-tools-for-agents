@@ -5,7 +5,8 @@ Reusable CLI tools and Bob/Claude agent skills for managing Confluent Cloud Flin
 
 ## Installation
 
-Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+* Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+* Work from dbt folder
 
 ```bash
 # Install all domains

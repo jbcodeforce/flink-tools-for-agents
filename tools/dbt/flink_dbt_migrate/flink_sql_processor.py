@@ -11,15 +11,20 @@ import logging
 # Logger
 # ---------------------------------------------------------------------------
 
+# Logs are written next to this package directory so the path is stable
+# regardless of the working directory pytest is invoked from.
+_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
+
+
 def _get_logger() -> logging.Logger:
     logger = logging.getLogger("mig_to_dbt")
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
-        log_path = Path("logs") / "mig_to_dbt.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = _LOG_DIR / "mig_to_dbt.log"
         handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(
-            logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s",
+            logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
                               datefmt="%Y-%m-%d %H:%M:%S")
         )
         logger.addHandler(handler)
@@ -191,27 +196,57 @@ def _strip_sql_comments(sql: str) -> str:
 
 
 def _split_definitions(body: str) -> list[str]:
+    """Split a CREATE TABLE column body on top-level commas.
+
+    Respects:
+    - angle-bracket depth  (MAP<K, V>, ARRAY<ROW<...>>)
+    - parenthesis depth    (ROW(...), nested types)
+    - single-quoted strings (COMMENT 'values are: A, B' must not split)
+    """
     parts: list[str] = []
     current: list[str] = []
     angle_depth = 0
     paren_depth = 0
+    in_string = False
 
-    for char in body:
-        if char == "<":
-            angle_depth += 1
-        elif char == ">":
-            angle_depth -= 1
-        elif char == "(":
-            paren_depth += 1
-        elif char == ")":
-            paren_depth -= 1
-        elif char == "," and angle_depth == 0 and paren_depth == 0:
-            piece = "".join(current).strip()
-            if piece:
-                parts.append(piece)
-            current = []
-            continue
-        current.append(char)
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if in_string:
+            current.append(char)
+            if char == "'":
+                # Doubled single-quote is an escaped quote inside the string
+                if i + 1 < len(body) and body[i + 1] == "'":
+                    current.append(body[i + 1])
+                    i += 2
+                    continue
+                in_string = False
+        else:
+            if char == "'":
+                in_string = True
+                current.append(char)
+            elif char == "<":
+                angle_depth += 1
+                current.append(char)
+            elif char == ">":
+                angle_depth -= 1
+                current.append(char)
+            elif char == "(":
+                paren_depth += 1
+                current.append(char)
+            elif char == ")":
+                paren_depth -= 1
+                current.append(char)
+            elif char == "," and angle_depth == 0 and paren_depth == 0:
+                piece = "".join(current).strip()
+                if piece:
+                    parts.append(piece)
+                current = []
+                i += 1
+                continue
+            else:
+                current.append(char)
+        i += 1
 
     piece = "".join(current).strip()
     if piece:
@@ -231,7 +266,9 @@ def _parse_column_definition(defn: str) -> DdlColumn | None:
     not_null = bool(re.search(r"\bNOT\s+NULL\b", stripped, re.IGNORECASE))
     type_part = re.sub(r"\bNOT\s+NULL\b", "", stripped, flags=re.IGNORECASE).strip()
 
-    name_match = re.match(r"(`[^`]+`|\w+)\s+(.+)", type_part, re.DOTALL)
+    # Allow zero or more whitespace between backtick-quoted name and type
+    # e.g. `col_name`STRING (no space) is valid in some DDL files
+    name_match = re.match(r"(`[^`]+`|\w+)\s*(.+)", type_part, re.DOTALL)
     if not name_match:
         raise ValueError(f"Could not parse column definition: {defn}")
 
@@ -311,7 +348,7 @@ def is_values_insert(sql: str) -> bool:
 
 def parse_ddl(sql: str) -> DdlTable:
     create_match = re.search(
-        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<table>`[^`]+`|\w+)\s*\(",
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<table>`[^`]+`|\w+)\s*\(",
         sql,
         re.IGNORECASE,
     )
@@ -555,41 +592,50 @@ def discover_ddl_path(
 
 def collect_cte_names(body: str) -> set[str]:
     """
-    Given a SQL query in body, extract the name of CTEs. 
-    Returns  set of unique namnes
+    Given a SQL query in body, extract the name of CTEs.
+    Returns set of unique names.
+
+    Handles both top-of-body ``WITH cte AS (...)`` blocks and inline
+    sub-query aliases that appear anywhere in the body (e.g. ``final as (``
+    defined mid-query after a ``UNION ALL`` branch).
     """
-    stripped = body.lstrip()
-    if not re.match(r"WITH\b", stripped, re.IGNORECASE):
-        return set()
+    # Strip line comments first so aliases in comments are ignored
+    clean = re.sub(r"--[^\n]*", "", body)
 
     names: set[str] = set()
-    pos = re.match(r"WITH\s+", stripped, re.IGNORECASE).end()
-    rest = stripped[pos:]
 
-    while rest:
-        match = re.match(r"(`[^`]+`|[\w]+)\s+AS\s+\(", rest, re.IGNORECASE)
-        if not match:
+    # Fast path: walk a top-level WITH ... block properly
+    stripped = clean.lstrip()
+    if re.match(r"WITH\b", stripped, re.IGNORECASE):
+        pos = re.match(r"WITH\s+", stripped, re.IGNORECASE).end()
+        rest = stripped[pos:]
+        while rest:
+            match = re.match(r"(`[^`]+`|[\w]+)\s+AS\s+\(", rest, re.IGNORECASE)
+            if not match:
+                break
+            names.add(strip_identifier(match.group(1)))
+            open_paren = match.end() - 1
+            depth = 0
+            index = open_paren
+            while index < len(rest):
+                char = rest[index]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        index += 1
+                        break
+                index += 1
+            rest = rest[index:].lstrip()
+            if rest.startswith(","):
+                rest = rest[1:].lstrip()
+                continue
             break
 
+    # Also capture any inline CTE aliases anywhere in the body
+    # Pattern: word/backtick-name followed by AS (
+    for match in re.finditer(r"\b(`[^`]+`|[\w]+)\s+[Aa][Ss]\s+\(", clean):
         names.add(strip_identifier(match.group(1)))
-        open_paren = match.end() - 1
-        depth = 0
-        index = open_paren
-        while index < len(rest):
-            char = rest[index]
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    index += 1
-                    break
-            index += 1
-
-        rest = rest[index:].lstrip()
-        if rest.startswith(","):
-            rest = rest[1:].lstrip()
-            continue
-        break
 
     return names

@@ -1,0 +1,9 @@
+version: 2
+models:
+- name: employee_count
+  description: Migrated from dml.employee_count.sql
+  columns:
+  - name: dept_id
+    data_type: INT
+  - name: emp_count
+    data_type: BIGINT

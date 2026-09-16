@@ -86,10 +86,46 @@ uv run flink-sql-migrate-dbt migrate-sl-folder ./pipelines ./my-dbt-project --wr
 
 # Overwrite existing files
 uv run flink-sql-migrate-dbt migrate-sl-folder ./pipelines ./my-dbt-project --write --force
+
+# Scope run to one product subtree (e.g. only tables under pipelines/.../aqem/...)
+uv run flink-sql-migrate-dbt migrate-sl-folder ./pipelines ./my-dbt-project --product aqem --write
+
+# Exclude folders listed in a text file (one folder path per line)
+uv run flink-sql-migrate-dbt migrate-sl-folder ./pipelines ./my-dbt-project --exclude-file ./excluded_folders.txt --write
 ```
 
 The tool discovers all `sql-scripts/dml.*.sql` files under the pipeline folder, infers their
 DDL counterparts, and emits dbt models + seeds + schema files.
+
+### Resume behaviour — `tracking.yml`
+
+On every `--write` run, `migrate-sl-folder` maintains a `tracking.yml` file in the dbt project
+root. Each entry records the table name, its DML SHA-256, migration status (`done` / `failed` /
+`skipped`), and an optional error message.
+
+**Skip logic:** a table is skipped when its entry in `tracking.yml` is already `done` *and* the
+DML SHA hasn't changed since. This allows large migrations to be restarted safely after
+interruptions — only new or changed tables are processed.
+
+**Force re-migration:** pass `--force` to ignore the skip logic and re-migrate all tables
+regardless of their tracked status.
+
+```yaml
+# tracking.yml — auto-generated; do not edit manually
+tables:
+  sl_fct_order:
+    relative_path: facts/aqem/fct_order
+    dml_sha256: "abc123..."
+    status: done          # done | failed | skipped
+    error: null
+    migrated_at: "2025-07-10T14:23:01"
+  sl_int_payments:
+    relative_path: intermediates/aqem/int_payments
+    dml_sha256: "def456..."
+    status: failed
+    error: "DDL not found for table sl_raw_payments"
+    migrated_at: "2025-07-10T14:23:05"
+```
 
 ## Scaffold a new dbt streaming project
 

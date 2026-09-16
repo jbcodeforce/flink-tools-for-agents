@@ -50,6 +50,7 @@ def migrate_dml_to_dbt(
     source_name: str | None = None,
     resolve_sources: bool = True,
     upstream_ddl_map: dict[str, Path] | None = None,
+    global_ddl_index: dict[str, Path] | None = None,
 ) -> MigrationResult:
     logger = _get_logger()
     logger.info(
@@ -94,6 +95,7 @@ def migrate_dml_to_dbt(
         source_name=resolved_source_name,
         resolve_sources=resolve_sources,
         upstream_ddl_map=upstream_ddl_map,
+        global_ddl_index=global_ddl_index,
     )
 
     model_sql = emit_model_sql(

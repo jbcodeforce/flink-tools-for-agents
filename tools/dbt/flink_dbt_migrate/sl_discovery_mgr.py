@@ -64,7 +64,48 @@ def _find_pipelines_parent(folder: Path) -> Path:
     return current
 
 
-def crawl_pipeline_folder(folder: Path) -> list[TableEntry]:
+def load_excluded_folders(exclude_file: Path, base_dir: Path | None = None) -> set[Path]:
+    """Load folder paths to exclude from an exclusion text file.
+
+    Each row is a folder path (relative or absolute).
+    Blank lines and lines starting with '#' are ignored.
+    Relative paths are resolved against *base_dir* if provided, otherwise against the parent of *exclude_file*.
+    """
+    exclude_file = exclude_file.resolve()
+    if not exclude_file.is_file():
+        raise FileNotFoundError(f"Exclusion file not found: {exclude_file}")
+
+    root_dir = (base_dir or exclude_file.parent).resolve()
+    excluded: set[Path] = set()
+
+    for line in exclude_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        folder_path = Path(line)
+        if not folder_path.is_absolute():
+            folder_path = (root_dir / folder_path).resolve()
+        else:
+            folder_path = folder_path.resolve()
+        excluded.add(folder_path)
+
+    return excluded
+
+
+def _is_excluded(path: Path, excluded_folders: set[Path]) -> bool:
+    """Check if *path* is in *excluded_folders* or is a descendant of any excluded folder."""
+    path = path.resolve()
+    for excl in excluded_folders:
+        if path == excl or excl in path.parents:
+            return True
+    return False
+
+
+def crawl_pipeline_folder(
+    folder: Path,
+    excluded_folders: set[Path] | None = None,
+    product: str | None = None,
+) -> list[TableEntry]:
     """
     Recursively walk *folder* and return one TableEntry per discoverable table.
 
@@ -72,18 +113,25 @@ def crawl_pipeline_folder(folder: Path) -> list[TableEntry]:
     - a ``sql_scripts/`` subdirectory exists, AND
     - at least one ``dml.*.sql`` file is present, AND
     - a matching ``ddl.*.sql`` can be resolved via the standard discovery rules.
+    - the table directory is not part of ``excluded_folders``.
+
+    When *product* is set, only entries whose ``relative_path`` contains a segment
+    equal to *product* are returned (matches by path segment value, not position).
 
     Tables whose DDL cannot be found are skipped with a warning on stderr.
     Upstream DDL paths are resolved from ``pipeline_definition.json`` when present.
     """
     folder = folder.resolve()
     pipelines_parent = _find_pipelines_parent(folder)
+    excluded = {p.resolve() for p in excluded_folders} if excluded_folders else set()
 
     entries: list[TableEntry] = []
     for sql_scripts_dir in sorted(folder.rglob("sql-scripts")):
         if not sql_scripts_dir.is_dir():
             continue
         table_dir = sql_scripts_dir.parent
+        if excluded and _is_excluded(table_dir, excluded):
+            continue
         upstream_ddl_map = _upstream_ddl_map_from_pipeline_def(table_dir, pipelines_parent)
 
         for dml_file in sorted(sql_scripts_dir.glob("dml.*.sql")):
@@ -107,6 +155,8 @@ def crawl_pipeline_folder(folder: Path) -> list[TableEntry]:
             sha256 = hashlib.sha256(dml_file.read_bytes()).hexdigest()
             # relative_path: from folder root to the table directory (parent of sql_scripts)
             relative_path = table_dir.relative_to(folder)
+            if product is not None and product not in relative_path.parts:
+                continue
             entries.append(
                 TableEntry(
                     table_name=target_table,

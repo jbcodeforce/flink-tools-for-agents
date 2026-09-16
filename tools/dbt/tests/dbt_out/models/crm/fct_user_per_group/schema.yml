@@ -1,0 +1,17 @@
+version: 2
+models:
+- name: sl_c360_fct_user_per_group
+  description: Migrated from dml.c360_fct_user_per_group.sql
+  columns:
+  - name: tenant_id
+    data_type: VARCHAR
+  - name: group_id
+    data_type: VARCHAR
+  - name: group_name
+    data_type: VARCHAR
+  - name: total_users
+    data_type: BIGINT
+  - name: active_users
+    data_type: BIGINT
+  - name: inactive_users
+    data_type: BIGINT

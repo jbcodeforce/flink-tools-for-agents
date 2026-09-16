@@ -663,3 +663,86 @@ class TestParseDmlCtasGuard:
         result = parse_dml("CREATE TABLE t AS WITH cte AS (SELECT 1) SELECT * FROM cte")
         assert result.target_table == "t"
         assert result.body.upper().startswith("WITH")
+
+
+# ===========================================================================
+# Regression tests for real-world DDL parsing issues
+# ===========================================================================
+
+class TestSplitDefinitionsCommentComma:
+    """Commas inside COMMENT '...' strings must not split column definitions."""
+
+    def test_comment_with_comma_not_split(self):
+        # Real pattern from src_amx_node: COMMENT 'Known values are: RECORD, RECORD_NODE'
+        body = (
+            "parentType STRING COMMENT 'The parent type. Known values are: RECORD, RECORD_NODE'"
+            ", id STRING"
+        )
+        parts = _split_definitions(body)
+        assert len(parts) == 2
+        assert "RECORD_NODE" in parts[0]
+        assert parts[1].strip() == "id STRING"
+
+    def test_comment_with_multiple_commas(self):
+        body = (
+            "status STRING COMMENT 'Known values: ACTIVE, CANCELLED, PENDING'"
+            ", name STRING"
+        )
+        parts = _split_definitions(body)
+        assert len(parts) == 2
+        assert "PENDING" in parts[0]
+
+    def test_escaped_quote_inside_comment(self):
+        # Doubled single-quote is an SQL escape for a literal single quote
+        body = "note STRING COMMENT 'it''s a note, with comma', id INT"
+        parts = _split_definitions(body)
+        assert len(parts) == 2
+        assert "it''s" in parts[0]
+
+    def test_normal_columns_unaffected(self):
+        body = "id BIGINT, name STRING, ts TIMESTAMP(3)"
+        parts = _split_definitions(body)
+        assert len(parts) == 3
+
+
+class TestParseColumnDefinitionNoSpaceAfterBacktick:
+    """Backtick-quoted column names with no space before type must parse."""
+
+    def test_no_space_between_backtick_and_type(self):
+        # Real pattern: `unit_procedure_sid`STRING
+        ddl = "CREATE TABLE t (`unit_procedure_sid`STRING, `name` STRING)"
+        table = parse_ddl(ddl)
+        assert len(table.columns) == 2
+        assert table.columns[0].name == "unit_procedure_sid"
+        assert table.columns[0].flink_type == "STRING"
+
+    def test_normal_space_still_works(self):
+        ddl = "CREATE TABLE t (`unit_procedure_sid` STRING)"
+        table = parse_ddl(ddl)
+        assert table.columns[0].name == "unit_procedure_sid"
+        assert table.columns[0].flink_type == "STRING"
+
+
+class TestParseDdlCreateOrReplaceTable:
+    """CREATE OR REPLACE TABLE must be accepted by parse_ddl."""
+
+    def test_create_or_replace_table(self):
+        ddl = (
+            "CREATE OR REPLACE TABLE `public_qx_mx_permissions_mfg_cfg_role_group` (\n"
+            "   qx_db_name_key STRING,\n"
+            "   operation STRING\n"
+            ")"
+        )
+        table = parse_ddl(ddl)
+        assert table.table_name == "public_qx_mx_permissions_mfg_cfg_role_group"
+        assert len(table.columns) == 2
+
+    def test_create_table_if_not_exists_still_works(self):
+        ddl = "CREATE TABLE IF NOT EXISTS my_table (id STRING)"
+        table = parse_ddl(ddl)
+        assert table.table_name == "my_table"
+
+    def test_plain_create_table_still_works(self):
+        ddl = "CREATE TABLE my_table (id STRING)"
+        table = parse_ddl(ddl)
+        assert table.table_name == "my_table"

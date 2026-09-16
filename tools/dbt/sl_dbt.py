@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS {topic_name} (
 ) WITH (
     'connector'                = 'confluent',
     'changelog.mode'           = 'append',
+    'kafka.topic'              = '{topic_name}',
     'scan.startup.mode'        = 'earliest-offset',
     'value.format'             = 'avro-registry',
     'kafka.cleanup-policy'     = 'delete'
@@ -443,7 +444,7 @@ def add_raw_topic(
       sl-dbt add-raw-topic ./my_project raw_customers
     """
     meta = load_metadata(project_root)
-    raws_dir = project_root / meta.pipelines_dir / "raws" / topic_name
+    raws_dir = project_root / meta.pipelines_dir / "models" / "raws" / topic_name
     profile_name = meta.dbt_profile_name
 
     _write(

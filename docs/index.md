@@ -2,6 +2,14 @@
 
 Reusable CLI tools and Bob/Claude agent skills for managing Confluent Cloud Flink projects, SQL statements, dbt confluent projects, and Kafka on Confluent Cloud.
 
+User may interact with an existing AI harness liek Claude Code, Codex, IBM Bob, Cursor... which itself calls LLM models. The harness exposes tools that can be directly called by a human. 
+
+![](./images/hl_architecture.drawio.png)
+
+Those tools are in three groups: flink project management (using Confluent dbt), Confluent cloud deployment (using sql-confluent library), and Kafka/schema registry tools for development practices areound schema and tests.
+
+This repository includes tool implementation, LLM skill definitions and how data engineers may use those with or without AI harness.
+
 ## Quick Start For Developers
 
 ```bash
@@ -16,6 +24,10 @@ uv run sl-dbt --help
 uv run flink-sql-cleanup --help
 uv run flink-sql-register --help
 ```
+
+## Quick Start for Data Engineer
+
+See the [Data engineer day to day practice](./methodology/index.md)
 
 ## Domains
 

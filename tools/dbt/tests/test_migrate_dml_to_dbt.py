@@ -32,7 +32,7 @@ def test_cli_dry_run(cli_runner: CliRunner) -> None:
     target_path : Path = dbt_project_path / "models" / "hr" / "employees"
     result = cli_runner.invoke(
         app,
-        ["migrate-one-file", str(BASIC_PATH / "dml.employee_count.sql"), str(target_path), "--dbt-project-dir", dbt_project_path],
+        ["migrate-one-file", str(BASIC_PATH / "dml.employee_count.sql"), str(target_path), "--dbt-project-dir", str(dbt_project_path)],
          catch_exceptions=False, 
     )
     print(result.stdout)
@@ -43,13 +43,13 @@ def test_cli_dry_run(cli_runner: CliRunner) -> None:
     assert "name: employee" in result.stdout
 
 
-def test_cli_write(cli_runner: CliRunner) -> None:
+def test_cli_basic_sql_processing(cli_runner: CliRunner) -> None:
     dbt_project_path = tests_path / "dbt_out"
     target_path : Path = dbt_project_path / "models" / "crm" / "employees"
    
     result = cli_runner.invoke(
         app,
-        ["migrate-one-file", str(BASIC_PATH / "dml.employee_count.sql"), str(target_path), "--dbt-project-dir", dbt_project_path, "--write", "--force"],
+        ["migrate-one-file", str(BASIC_PATH / "dml.employee_count.sql"), str(target_path), "--dbt-project-dir", str(dbt_project_path), "--write", "--force"],
     )
     print(result.stdout)
     assert result.exit_code == 0, f"CLI invocation failed (exit_code={result.exit_code}):\n{result.output}"
@@ -57,3 +57,20 @@ def test_cli_write(cli_runner: CliRunner) -> None:
     assert (target_path / "schema.yml").exists()
     assert "Wrote" in result.stdout
 
+
+def test_migrate_fct_user_per_group(cli_runner: CliRunner) -> None:
+    sl_test_pipeline_path = tests_path / "fixtures" / "flink-project" / "pipelines"
+    dbt_project_path = tests_path / "dbt_out"
+    target_path : Path = dbt_project_path / "models" / "crm"
+   
+    result = cli_runner.invoke(
+        app,
+        ["migrate-one-file", str(sl_test_pipeline_path / "facts" / "c360" / "fct_user_per_group" / "sql-scripts" / "dml.c360_fct_user_per_group.sql"),
+              str(target_path),
+              "--dbt-project-dir", str(dbt_project_path),
+              "--write", "--force"],
+    )
+    print(result.stdout)
+    assert result.exit_code == 0, f"CLI invocation failed (exit_code={result.exit_code}):\n{result.output}"
+    assert (target_path / "fct_user_per_group" / "schema.yml").exists()
+    assert "Wrote" in result.stdout

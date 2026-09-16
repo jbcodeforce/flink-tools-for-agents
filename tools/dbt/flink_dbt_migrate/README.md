@@ -37,24 +37,21 @@ Projects managed by the `shift_left` utilities adopt a specific folder structure
 
 | File | Responsibility |
 |------|---------------|
-| [`migrate_dml_to_dbt.py`](migrate_dml_to_dbt.py) | CLI entry point (Typer). Two commands: `migrate` (single DML) and `migrate-sl-folder` (batch crawl). Orchestrates validation flow. |
-| [`migrate.py`](migrate.py) | Core orchestrator `migrate_dml_to_dbt()`. Calls all parse/emit/discover modules and returns a `MigrationResult`. |
-| [`parse_dml.py`](parse_dml.py) | Parses `INSERT INTO … SELECT` DML (target table + `SELECT` body; rejects CTAS) and `INSERT INTO … VALUES` DML (target table, optional column list, typed literal rows) via `parse_values_dml()` / `is_values_insert()`. |
-| [`parse_ddl.py`](parse_ddl.py) | Parses `CREATE TABLE` DDL. Extracts column names + Flink types, primary key, `DISTRIBUTED BY`, and `WITH(…)` connector options. |
-| [`type_map.py`](type_map.py) | Maps Flink column types (`STRING`, `BIGINT`, `TIMESTAMP(3)`, `DECIMAL(10,2)`, …) to dbt `data_type` strings. |
-| [`discover_deps.py`](discover_deps.py) | Scans the DML body for upstream tables (`FROM`, `JOIN`, `TABLE`). Resolves each to a `ref` (already a dbt model) or `source` (needs a Flink DDL lookup). |
-| [`rewrite_refs.py`](rewrite_refs.py) | Rewrites bare Flink table names in the SQL body to `{{ ref('model') }}` or `{{ source('name', 'table') }}` Jinja calls. Skips CTE names. |
-| [`emit_model.py`](emit_model.py) | Builds the final dbt model `.sql` file: `{{ config(…) }}` block + migration comment + rewritten SQL body. |
-| [`emit_schema.py`](emit_schema.py) | Builds (or merges into) the per-directory `schema.yml` with column `data_type` entries from the DDL. |
-| [`emit_seed.py`](emit_seed.py) | Builds the dbt seed `.csv` from parsed `VALUES` rows, and builds (or merges into) `seeds/schema.yml` with `config.column_types` from the DDL. |
-| [`emit_sources.py`](emit_sources.py) | Builds (or merges into) the project-level `sources.yaml` with entries for each upstream table that is a Flink source (not a dbt model). |
-| [`validate_compile.py`](validate_compile.py) | Runs `dbt compile --select {model}`, reads the compiled SQL from `target/compiled/`, and resolves relation aliases from `manifest.json`. |
-| [`compare_sql.py`](compare_sql.py) | Normalises and diffs the source DML body against the compiled model SQL. Produces a pass/fail report with a unified diff on mismatch. |
-| [`temp_write.py`](temp_write.py) | Writes model/schema files temporarily for `dbt compile` (used by `--validate` without `--write`), then restores the originals. |
+| [`migrate_dml_to_dbt.py`](migrate_dml_to_dbt.py) | CLI entry point (Typer). Two commands: `migrate` (single DML/CTAS) and `migrate-sl-folder` (batch crawl). Orchestrates validation flow. |
+| [`migrate.py`](migrate.py) | Core orchestrator `migrate_dml_to_dbt()` and `migrate_values_dml_to_seed()`. Calls all parse, emit, and dependency discovery modules and returns `MigrationResult` / `SeedMigrationResult`. |
+| [`sl_discovery_mgr.py`](sl_discovery_mgr.py) | `shift_left` folder crawler: walks pipeline directories, parses `pipeline_definition.json`, filters out excluded folders (`.sl_dbt_exclude`), and discovers table entries and sibling DDL mappings. |
+| [`flink_sql_processor.py`](flink_sql_processor.py) | Parses Flink SQL statements: DDL (`CREATE TABLE`), DML (`INSERT INTO … SELECT` and `INSERT INTO … VALUES`), and CTAS (`CREATE TABLE … AS SELECT`). Extracts schemas, columns, types, primary keys, `DISTRIBUTED BY`, and `WITH (…)`. Discovers sibling DDL files. |
+| [`dbt_element_mgr.py`](dbt_element_mgr.py) | Generates and manages dbt files: models (`.sql` with `{{ config(…) }}` and Jinja refs), model schemas (`schema.yml`), seed CSV files and seed schemas (`seeds/schema.yml`), and project source definitions (`sources.yaml`). |
+| [`discover_deps.py`](discover_deps.py) | Scans SQL queries for upstream table dependencies (`FROM`, `JOIN`, `TABLE(…)`). Resolves each to `ref` (dbt model) or `source` (external Flink table via DDL lookup or pipeline definition map). |
+| [`rewrite_refs.py`](rewrite_refs.py) | Rewrites bare Flink table identifiers in SQL queries to `{{ ref('model') }}` or `{{ source('name', 'table') }}` Jinja calls while preserving CTEs. |
+| [`type_map.py`](type_map.py) | Maps Flink column data types (`STRING`, `BIGINT`, `TIMESTAMP(3)`, `DECIMAL(10,2)`, …) to dbt `data_type` strings. |
+| [`validate_compile.py`](validate_compile.py) | Runs `dbt compile --select {model}`, reads compiled SQL from `target/compiled/`, and maps dbt relation aliases from `manifest.json`. |
+| [`compare_sql.py`](compare_sql.py) | Normalises and diffs source DML/CTAS SQL against compiled dbt model SQL, producing a pass/fail report with unified diffs on mismatch. |
+| [`temp_write.py`](temp_write.py) | Temporarily writes model/schema files for `dbt compile` during `--validate` without `--write`, restoring originals afterwards. |
 
 ---
 
-## Sequence Flow — `migrate a shif_left utils pipelines folder`
+## Sequence Flow — `migrate a shift_left utils pipelines folder`
 
 This is the batch command that migrates a full `shift_left` pipelines folder.
 
@@ -62,15 +59,15 @@ This is the batch command that migrates a full `shift_left` pipelines folder.
 CLI: migrate-sl-folder <pipeline_dir> <dbt_project_dir> [--write] [--force]
       │
       ▼
-migrate_dml_to_dbt.py :: crawl_pipeline_folder(pipeline_dir)
+sl_discovery_mgr.py :: crawl_pipeline_folder(pipeline_dir)
   │
-  ├── walks pipeline_dir recursively for sql-scripts/ directories
+  ├── walks pipeline_dir recursively for sql-scripts/ directories (respects .sl_dbt_exclude)
   ├── for each table/ directory:
   │     ├── reads pipeline_definition.json → upstream_ddl_map {table → ddl_path}
   │     └── for each dml.*.sql found:
-  │           ├── parse_dml.py :: is_values_insert()    → detects INSERT INTO ... VALUES seeds
-  │           ├── parse_dml.py :: parse_dml() / parse_values_dml() → target_table
-  │           ├── parse_dml.py :: discover_ddl_path()  → sibling ddl.*.sql path
+  │           ├── flink_sql_processor.py :: is_values_insert()    → detects INSERT INTO ... VALUES seeds
+  │           ├── flink_sql_processor.py :: parse_dml() / parse_values_dml() → target_table
+  │           ├── flink_sql_processor.py :: discover_ddl_path()  → sibling ddl.*.sql path
   │           └── builds TableEntry {table_name, dml_path, ddl_path, sha256, relative_path, upstream_ddl_map, is_seed}
   │
   ▼
@@ -102,35 +99,36 @@ migrate_dml_to_dbt.py :: migrate()
   ▼
 migrate.py :: migrate_dml_to_dbt(statement_file, target_dir, ...)
   │
-  ├─[1] parse_dml.py :: parse_dml(dml_text)
-  │       Regex-extracts INSERT INTO target_table and the SELECT body.
-  │       Returns DmlStatement {target_table, body, leading_comments}.
+  ├─[1] flink_sql_processor.py :: parse_dml(dml_text)
+  │       Regex-extracts INSERT INTO / CREATE TABLE target_table and SELECT body.
+  │       Returns DmlStatement {target_table, body, leading_comments, with_options, source_file}.
   │
-  ├─[2] parse_dml.py :: discover_ddl_path(dml_path, target_table, ddl_file?)
+  ├─[2] flink_sql_processor.py :: discover_ddl_path(dml_path, target_table, ddl_file?)
   │       Looks for sibling DDL in order:
   │         a) --ddl-file override
   │         b) ddl.<same-stem>.sql in the same folder
   │         c) ddl.<target_table>.sql in the same folder
-  │         Raises FileNotFoundError if nothing is found.
+  │         (For CTAS, extracts schema directly from the statement body)
   │
-  ├─[3] parse_ddl.py :: parse_ddl(ddl_text)
+  ├─[3] flink_sql_processor.py :: parse_ddl(ddl_text)
   │       Parses CREATE TABLE: extracts columns (name + Flink type + NOT NULL),
   │       PRIMARY KEY, DISTRIBUTED BY, and WITH(…) connector options.
   │       Returns DdlTable.
   │
   ├─[4] discover_deps.py :: resolve_upstream_deps(source_project_dir, dbt_project_dir, dml, ...)
-  │       a) rewrite_refs.py :: collect_cte_names(body)  — skip CTE aliases
-  │       b) collect_upstream_tables(body, cte_names)    — regex scan FROM/JOIN/TABLE(…)
+  │       a) flink_sql_processor.py :: collect_cte_names(body)  — skip CTE aliases
+  │       b) collect_upstream_tables(body, cte_names)           — regex scan FROM/JOIN/TABLE(…)
   │       c) for each upstream table:
   │            - if in --ref-table overrides   → resolution=ref  (explicit mapping)
   │            - if found as a .sql model in dbt_project/models/  → resolution=ref
+  │            - if in upstream_ddl_map        → resolution=source (from pipeline_definition.json)
   │            - if --no-sources               → resolution=ref  (keep as ref, no DDL lookup)
   │            - else: discover_upstream_ddl() searches source_project_dir for ddl.*.sql
   │                    that CREATE TABLEs the given name → resolution=source
   │       Returns list[UpstreamDep {table_name, ddl_path, ddl, resolution, ref_model/source_name}].
   │
-  ├─[5] emit_model.py :: emit_model_sql(dml, ddl, materialized, upstream_deps, ...)
-  │       a) emit_model.py :: format_config_block(ddl, materialized)
+  ├─[5] dbt_element_mgr.py :: emit_model_sql(dml, ddl, materialized, upstream_deps, ...)
+  │       a) dbt_element_mgr.py :: format_config_block(ddl, materialized)
   │            Builds {{ config(materialized='streaming_table', with={...}) }}
   │            including WITH options and DISTRIBUTED BY from the DDL.
   │       b) rewrite_refs.py :: rewrite_refs(body, cte_names, ref_overrides, ref_tables, source_tables)
@@ -139,14 +137,14 @@ migrate.py :: migrate_dml_to_dbt(statement_file, target_dir, ...)
   │              {{ source('src', 'table') }}  for source-resolved tables
   │       Returns the complete dbt model SQL string.
   │
-  ├─[6] emit_schema.py :: emit_schema_yml(target_dir, model_name, ddl, ...)
+  ├─[6] dbt_element_mgr.py :: emit_schema_yml(target_dir, model_name, ddl, ...)
   │       a) loads existing schema.yml from target_dir (or starts fresh)
   │       b) type_map.py :: flink_type_to_dbt(flink_type)  — maps each column type
   │       c) merges the new model entry into the YAML (adds columns, preserves extras)
   │          --force replaces the existing entry entirely
   │       Returns the YAML string.
   │
-  ├─[7] emit_sources.py :: emit_sources_yml(models_dir, source_name, upstream_deps, ...)
+  ├─[7] dbt_element_mgr.py :: emit_sources_yml(models_dir, source_name, upstream_deps, ...)
   │       Only runs when upstream_deps contain source-resolved tables AND a dbt project was found.
   │       a) loads existing sources.yaml from dbt_project/models/ (or starts fresh)
   │       b) for each source dep: type_map.py :: flink_type_to_dbt() per column
@@ -175,20 +173,20 @@ migrate_dml_to_dbt.py :: run_migrate_seed()
   ▼
 migrate.py :: migrate_values_dml_to_seed(statement_file, seeds_dir, ...)
   │
-  ├─[1] parse_dml.py :: parse_values_dml(dml_text)
+  ├─[1] flink_sql_processor.py :: parse_values_dml(dml_text)
   │       Extracts target_table, an optional column list, and typed literal rows
   │       (DATE '...', TIMESTAMP '...', quoted strings with '' escapes, NULL, numbers).
   │       Returns ValuesDmlStatement {target_table, columns, rows}.
   │
-  ├─[2] parse_dml.py :: discover_ddl_path() + parse_ddl.py :: parse_ddl()
+  ├─[2] flink_sql_processor.py :: discover_ddl_path() + flink_sql_processor.py :: parse_ddl()
   │       Same sibling-DDL discovery as the model flow. If the VALUES statement
   │       omitted a column list, the DDL's column order is used instead
   │       (row arity must then match the DDL's column count).
   │
-  ├─[3] emit_seed.py :: emit_seed_csv(columns, rows)
+  ├─[3] dbt_element_mgr.py :: emit_seed_csv(columns, rows)
   │       Writes standard CSV (csv.writer, QUOTE_MINIMAL) — header + one row per tuple.
   │
-  ├─[4] emit_seed.py :: emit_seed_schema_yml(seeds_dir, seed_name, ddl, ...)
+  ├─[4] dbt_element_mgr.py :: emit_seed_schema_yml(seeds_dir, seed_name, ddl, ...)
   │       a) loads existing seeds/schema.yml (or starts fresh)
   │       b) builds a `seeds:` entry with `config.column_types` (type_map.py per column)
   │          and, if the DDL declares WITH(...) options, a `meta.flink_ddl_with_options`
