@@ -37,8 +37,8 @@ from tools.flink.manifest.manifest import (
 # Helpers — path to the real airbnb_streaming project in this repo
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # flink-studies/
-_AIRBNB = _REPO_ROOT / "code" / "dbt" / "airbnb_streaming"
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent  # flink-tools-for-agents/
+_AIRBNB = _REPO_ROOT.parent / "flink-studies" / "code" / "dbt" / "airbnb_streaming"
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +263,11 @@ def test_read_dbt_source_tables_deduplicates(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _AIRBNB_MISSING = not _AIRBNB.exists()
-
+print(_AIRBNB)
 
 @pytest.mark.skipif(_AIRBNB_MISSING, reason="airbnb_streaming project not present")
 def test_create_manifest_from_dbt_folder_airbnb() -> None:
+
     manifest = create_manifest_from_dbt_folder(_AIRBNB)
 
     # Groups present

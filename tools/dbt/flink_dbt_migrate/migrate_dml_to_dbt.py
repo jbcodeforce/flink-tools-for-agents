@@ -14,6 +14,7 @@ from tools.dbt.flink_dbt_migrate.sl_discovery_mgr import (
     crawl_pipeline_folder,
     load_excluded_folders,
     _upstream_ddl_map_from_pipeline_def,
+    _pipeline_models_from_pipeline_def,
     _find_pipelines_parent,
 )
 from tools.dbt.flink_dbt_migrate.discover_deps import build_pipelines_ddl_index
@@ -204,6 +205,10 @@ def migrate_sl_folder(
     global_ddl_index = build_pipelines_ddl_index(pipeline_dir)
     typer.echo(f"Global DDL index: {len(global_ddl_index)} tables indexed.")
 
+    known_models: set[str] = {entry.table_name for entry in entries}
+    for entry in entries:
+        known_models.update(entry.pipeline_models)
+
     for entry in entries:
         if not store.should_migrate(entry, force=force):
             skipped += 1
@@ -253,6 +258,7 @@ def migrate_sl_folder(
                 force=force,
                 upstream_ddl_map=entry.upstream_ddl_map,
                 global_ddl_index=global_ddl_index,
+                known_models=known_models,
             )
             target_dir.mkdir(parents=True, exist_ok=True)
             result.model_path.write_text(result.model_sql, encoding="utf-8")
@@ -430,6 +436,7 @@ def migrate_one_file(
     table_dir = statement_file.resolve().parent.parent
     pipelines_parent = _find_pipelines_parent(table_dir)
     auto_upstream_ddl_map = _upstream_ddl_map_from_pipeline_def(table_dir, pipelines_parent)
+    known_pipeline_models = _pipeline_models_from_pipeline_def(table_dir, pipelines_parent)
 
     # If target_dir doesn't already end with the pipeline folder name, append it so
     # the dbt hierarchy mirrors the source hierarchy.
@@ -463,6 +470,7 @@ def migrate_one_file(
             source_name=source_name,
             resolve_sources=not no_sources,
             upstream_ddl_map=auto_upstream_ddl_map,
+            known_models=known_pipeline_models,
         )
     except (ValueError, FileNotFoundError) as exc:
         typer.echo(str(exc), err=True)

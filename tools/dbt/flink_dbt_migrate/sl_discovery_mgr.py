@@ -24,6 +24,8 @@ class TableEntry:
     # table_name → absolute DDL path for upstream tables, sourced from pipeline_definition.json
     upstream_ddl_map: dict[str, Path] = field(default_factory=dict)
     is_seed: bool = False
+    # Upstream parent tables identified as pipeline models from pipeline_definition.json
+    pipeline_models: set[str] = field(default_factory=set)
 
 
 def _upstream_ddl_map_from_pipeline_def(
@@ -51,6 +53,39 @@ def _upstream_ddl_map_from_pipeline_def(
             if abs_ddl.is_file():
                 ddl_map[name] = abs_ddl
     return ddl_map
+
+
+def _pipeline_models_from_pipeline_def(
+    table_dir: Path,
+    pipelines_parent: Path,
+) -> set[str]:
+    """Inspect pipeline_definition.json parents to identify tables produced by pipeline DML.
+
+    A parent table is considered a pipeline model (and thus eligible for ref())
+    if its pipeline folder (or parent directory containing the DDL) contains a ``dml.*.sql`` file.
+    """
+    pipeline_def = table_dir / "pipeline_definition.json"
+    if not pipeline_def.is_file():
+        return set()
+    try:
+        data = json.loads(pipeline_def.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+    models: set[str] = set()
+    for parent in data.get("parents", []):
+        name = parent.get("table_name", "")
+        ddl_ref = parent.get("ddl_ref", "")
+        if not name or not ddl_ref:
+            continue
+        abs_ddl = (pipelines_parent / ddl_ref).resolve()
+        if not abs_ddl.is_file():
+            continue
+        # Check if the folder containing the DDL or its parent contains dml.*.sql
+        ddl_dir = abs_ddl.parent
+        if list(ddl_dir.glob("dml.*.sql")) or list(ddl_dir.parent.glob("sql-scripts/dml.*.sql")):
+            models.add(name)
+    return models
 
 def _find_pipelines_parent(folder: Path) -> Path:
     """Walk up from *folder* to find the directory that contains a 'pipelines/' sub-tree.
@@ -133,6 +168,7 @@ def crawl_pipeline_folder(
         if excluded and _is_excluded(table_dir, excluded):
             continue
         upstream_ddl_map = _upstream_ddl_map_from_pipeline_def(table_dir, pipelines_parent)
+        pipeline_models = _pipeline_models_from_pipeline_def(table_dir, pipelines_parent)
 
         for dml_file in sorted(sql_scripts_dir.glob("dml.*.sql")):
             try:
@@ -166,6 +202,7 @@ def crawl_pipeline_folder(
                     relative_path=relative_path,
                     upstream_ddl_map=upstream_ddl_map,
                     is_seed=is_seed,
+                    pipeline_models=pipeline_models,
                 )
             )
     return entries

@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import io
 from pathlib import Path
+import re
+
 
 import yaml
 
@@ -24,6 +26,47 @@ SOURCES_YML_NAME = "sources.yaml"
 # ---------------------------------------------------------------------------
 # Model SQL (emit_model)
 # ---------------------------------------------------------------------------
+
+
+# Jinja sequences that must be escaped when they appear inside SQL string literals.
+# dbt renders every model file through Jinja before compiling SQL, so a bare {%,
+# {{, or {# inside a quoted string will be mis-parsed as a Jinja tag.
+# Replacement: {{ '<seq>' }} — Jinja evaluates this to the literal two characters.
+_JINJA_ESCAPE: dict[str, str] = {
+    "{%": "{{ '{%' }}",
+    "{{": "{{ '{{' }}",
+    "{#": "{{ '{#' }}",
+}
+
+# Matches a single-quoted SQL string literal, including '' (doubled-quote escapes).
+_SQL_STRING_RE = re.compile(r"'(?:[^']|'')*'")
+
+# Matches any Jinja-sensitive two-character sequence inside a string literal.
+_JINJA_SEQ_RE = re.compile(r"\{%|\{\{|\{#")
+
+
+def escape_jinja_in_string_literals(sql: str) -> str:
+    """Escape Jinja-sensitive sequences inside SQL single-quoted string literals.
+
+    Scans *sql* for single-quoted literals and replaces ``{%``, ``{{``, and
+    ``{#`` with their ``{{ '<seq>' }}`` equivalents so that dbt/Jinja does not
+    interpret them as template tags.  Code outside of string literals is left
+    untouched.
+
+    Each sensitive sequence is replaced in a single regex pass over the literal
+    content so that a replacement such as ``{{ '{%' }}`` does not itself trigger
+    a second substitution of the ``{{`` it introduces.
+    """
+
+    def _escape_literal(literal_match: re.Match[str]) -> str:
+        return _JINJA_SEQ_RE.sub(
+            lambda m: _JINJA_ESCAPE[m.group(0)],
+            literal_match.group(0),
+        )
+
+    return _SQL_STRING_RE.sub(_escape_literal, sql)
+
+
 
 
 def format_config_block(
@@ -82,6 +125,9 @@ def emit_model_sql(
         ref_tables=ref_tables,
         source_tables=source_tables,
     )
+
+    body = escape_jinja_in_string_literals(body)
+
 
     parts: list[str] = [format_config_block(ddl, materialized=materialized), ""]
 

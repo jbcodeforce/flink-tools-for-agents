@@ -223,18 +223,20 @@ def resolve_upstream_deps(
     resolve_sources: bool = True,
     upstream_ddl_map: dict[str, Path] | None = None,
     global_ddl_index: dict[str, Path] | None = None,
+    known_models: set[str] | None = None,
 ) -> list[UpstreamDep]:
     log = _get_logger()
     ref_overrides = ref_overrides or {}
     upstream_ddl_map = upstream_ddl_map or {}
+    known_models = known_models or set()
     cte_names = collect_cte_names(dml.body)
     upstream_tables = collect_upstream_tables(dml.body, cte_names)
     resolved_source_name = source_name or default_source_name(source_project_dir)
     log.debug(
         "resolve_upstream_deps | target=%s  source_project_dir=%s  dbt_project_dir=%s  "
-        "upstream_tables=%s  cte_names=%s  upstream_ddl_map_keys=%s",
+        "upstream_tables=%s  cte_names=%s  upstream_ddl_map_keys=%s  known_models=%s",
         dml.target_table, source_project_dir, dbt_project_dir,
-        upstream_tables, cte_names, list(upstream_ddl_map.keys()),
+        upstream_tables, cte_names, list(upstream_ddl_map.keys()), list(known_models),
     )
 
     deps: list[UpstreamDep] = []
@@ -247,6 +249,18 @@ def resolve_upstream_deps(
                     ddl=None,
                     resolution="ref",
                     ref_model=ref_overrides[table_name],
+                )
+            )
+            continue
+
+        if table_name in known_models:
+            deps.append(
+                UpstreamDep(
+                    table_name=table_name,
+                    ddl_path=None,
+                    ddl=None,
+                    resolution="ref",
+                    ref_model=table_name,
                 )
             )
             continue

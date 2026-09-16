@@ -21,6 +21,7 @@ from tools.dbt.flink_dbt_migrate.dbt_element_mgr import (
     emit_seed_csv,
     emit_seed_schema_yml,
     emit_sources_yml,
+    escape_jinja_in_string_literals,
     format_config_block,
     load_schema_yml,
     load_seed_schema_yml,
@@ -877,3 +878,67 @@ def test_dump_sources_yml_produces_valid_yaml() -> None:
 
     parsed = yaml.safe_load(text)
     assert parsed["sources"][0]["name"] == "kafka"
+
+
+# ---------------------------------------------------------------------------
+# escape_jinja_in_string_literals
+# ---------------------------------------------------------------------------
+
+
+def test_escape_jinja_block_tag_in_string_literal() -> None:
+    """LIKE '{%' should have its {% escaped inside the quoted literal."""
+    sql = "SELECT * FROM t WHERE col LIKE '{%'"
+    result = escape_jinja_in_string_literals(sql)
+    assert "{{ '{%' }}" in result
+    # The surrounding single-quotes and rest of the SQL are preserved.
+    assert "LIKE" in result
+    assert "{%" not in result.replace("{{ '{%' }}", "")
+
+
+def test_escape_jinja_variable_in_string_literal() -> None:
+    sql = "SELECT '{{var}}' AS x"
+    result = escape_jinja_in_string_literals(sql)
+    # The opening {{ must be escaped; }} is harmless and left alone.
+    assert "{{ '{{' }}var}}" in result
+    # The original raw {{var sequence must no longer appear.
+    assert "{{var" not in result
+
+
+def test_escape_jinja_comment_in_string_literal() -> None:
+    sql = "SELECT '{# comment #}' AS x"
+    result = escape_jinja_in_string_literals(sql)
+    assert "{{ '{#' }}" in result
+
+
+def test_escape_jinja_leaves_code_outside_strings_untouched() -> None:
+    """Jinja tags that are *not* inside SQL string literals must not be touched."""
+    sql = "SELECT {{ ref('orders') }} AS x"
+    result = escape_jinja_in_string_literals(sql)
+    assert result == sql
+
+
+def test_escape_jinja_no_false_positive_plain_sql() -> None:
+    """Plain SQL with no Jinja sequences is returned unchanged."""
+    sql = "SELECT id, name FROM orders WHERE status = 'active'"
+    assert escape_jinja_in_string_literals(sql) == sql
+
+
+def test_escape_jinja_emit_model_sql_contains_escape() -> None:
+    """emit_model_sql post-processes the body so bare {%  in a LIKE is escaped."""
+    from tools.dbt.flink_dbt_migrate.flink_sql_processor import DdlColumn, DdlTable, DmlStatement
+
+    ddl = DdlTable(
+        table_name="out",
+        columns=[DdlColumn(name="payload", flink_type="STRING")],
+    )
+    dml = DmlStatement(
+        target_table="out",
+        body="SELECT payload FROM src WHERE payload LIKE '{%'",
+        leading_comments="",
+        with_options={},
+        source_file="",
+    )
+    sql = emit_model_sql(dml, ddl)
+    assert "{{ '{%' }}" in sql
+    # The raw sequence must not survive anywhere in the output.
+    assert "LIKE '{%'" not in sql

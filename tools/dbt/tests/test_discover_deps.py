@@ -90,3 +90,22 @@ def test_resolve_upstream_deps_no_sources_uses_ref() -> None:
 def test_discover_upstream_ddl_missing_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="No DDL file found"):
         discover_upstream_ddl(tmp_path, "missing_table")
+
+
+def test_resolve_upstream_deps_with_known_models() -> None:
+    sql = (JOINS_CC_FLINK / "dml.enriched_orders.sql").read_text(encoding="utf-8")
+    dml = parse_dml(sql)
+    deps = resolve_upstream_deps(
+        JOINS_CC_FLINK,
+        JOINS_CC_DBT,
+        dml,
+        source_name="cc_flink",
+        known_models={"d04_orders"},
+    )
+    assert [dep.table_name for dep in deps] == ["d04_orders", "d04_products"]
+    # d04_orders is known model -> ref
+    assert deps[0].resolution == "ref"
+    assert deps[0].ref_model == "d04_orders"
+    # d04_products is not known -> source
+    assert deps[1].resolution == "source"
+    assert deps[1].source_name == "cc_flink"

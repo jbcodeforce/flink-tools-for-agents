@@ -51,6 +51,7 @@ def migrate_dml_to_dbt(
     resolve_sources: bool = True,
     upstream_ddl_map: dict[str, Path] | None = None,
     global_ddl_index: dict[str, Path] | None = None,
+    known_models: set[str] | None = None,
 ) -> MigrationResult:
     logger = _get_logger()
     logger.info(
@@ -61,6 +62,7 @@ def migrate_dml_to_dbt(
 
     statement_path = Path(statement_file).resolve()
     target_path = Path(target_dir).resolve()
+    dbt_project_path = Path(dbt_project_dir).resolve()
     dml_text = statement_path.read_text(encoding="utf-8")
     dml = parse_dml(dml_text, source_file=statement_path.name)
 
@@ -83,19 +85,20 @@ def migrate_dml_to_dbt(
     sources_path: Path | None = None
     sources_yml: str | None = None
     try:
-        sources_path = dbt_project_dir / "models" / SOURCES_YML_NAME
+        sources_path = dbt_project_path / "models" / SOURCES_YML_NAME
     except FileNotFoundError:
         sources_path = None
 
     upstream_deps = resolve_upstream_deps(
         source_project,
-        target_path,
+        dbt_project_path,
         dml,
         ref_overrides=ref_overrides,
         source_name=resolved_source_name,
         resolve_sources=resolve_sources,
         upstream_ddl_map=upstream_ddl_map,
         global_ddl_index=global_ddl_index,
+        known_models=known_models,
     )
 
     model_sql = emit_model_sql(

@@ -5,6 +5,7 @@ from typing import List
 
 from tools.dbt.flink_dbt_migrate.sl_discovery_mgr import (
     _upstream_ddl_map_from_pipeline_def,
+    _pipeline_models_from_pipeline_def,
     _find_pipelines_parent,
     TableEntry,
     crawl_pipeline_folder,
@@ -35,6 +36,43 @@ def test_crawl_pipeline_folder() :
     assert table_entries
     assert len(table_entries) > 0
     print(json.dumps([asdict(e) for e in table_entries], indent=2, default=str))
+
+
+def test__pipeline_models_from_pipeline_def(tmp_path: Path):
+    pipelines = tmp_path / "pipelines"
+    # Create parent pipeline folder that contains dml
+    parent_scripts = pipelines / "dimensions/dim_users/sql-scripts"
+    parent_scripts.mkdir(parents=True)
+    (parent_scripts / "ddl.dim_users.sql").write_text("CREATE TABLE dim_users (id INT);")
+    (parent_scripts / "dml.dim_users.sql").write_text("INSERT INTO dim_users SELECT 1;")
+
+    # Create external source folder that only contains ddl (no dml)
+    src_scripts = pipelines / "sources/src_events/sql-scripts"
+    src_scripts.mkdir(parents=True)
+    (src_scripts / "ddl.src_events.sql").write_text("CREATE TABLE src_events (id INT);")
+
+    # Create child folder with pipeline_definition.json
+    child_dir = pipelines / "facts/fct_orders"
+    child_scripts = child_dir / "sql-scripts"
+    child_scripts.mkdir(parents=True)
+    pipeline_def = {
+        "table_name": "fct_orders",
+        "parents": [
+            {
+                "table_name": "dim_users",
+                "ddl_ref": "pipelines/dimensions/dim_users/sql-scripts/ddl.dim_users.sql",
+            },
+            {
+                "table_name": "src_events",
+                "ddl_ref": "pipelines/sources/src_events/sql-scripts/ddl.src_events.sql",
+            },
+        ],
+    }
+    (child_dir / "pipeline_definition.json").write_text(json.dumps(pipeline_def))
+
+    models = _pipeline_models_from_pipeline_def(child_dir, tmp_path)
+    assert "dim_users" in models
+    assert "src_events" not in models
 
 
 def test_load_excluded_folders(tmp_path: Path):

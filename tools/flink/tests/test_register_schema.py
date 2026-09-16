@@ -47,14 +47,12 @@ def test_avro_fqn_requires_name() -> None:
 
 def test_avro_fqn_from_device_close_detail() -> None:
     src = (
-        Path(__file__).resolve().parents[2]
-        / "07-1-multiple-event-types"
-        / "python"
+        Path(__file__).resolve().parent
         / "schemas"
         / "DeviceCloseDetail.avsc"
     )
     if not src.is_file():
-        pytest.skip("DeviceCloseDetail.avsc not found relative to tools/")
+        pytest.skip("DeviceCloseDetail.avsc not found relative to tests/")
     assert (
         avro_fqn_from_file(src)
         == "io.confluent.flink.multievent.DeviceCloseDetail"

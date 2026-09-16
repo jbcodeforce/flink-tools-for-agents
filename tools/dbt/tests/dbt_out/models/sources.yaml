@@ -1,27 +1,13 @@
 version: 2
 sources:
-- name: sql_scripts
+- name: cc_flink
   tables:
-  - name: sl_c360_dim_users
-    identifier: sl_c360_dim_users
+  - name: employees
+    identifier: employees
     columns:
-    - name: user_id
+    - name: emp_id
+      data_type: INT
+    - name: name
       data_type: VARCHAR
-    - name: user_name
-      data_type: VARCHAR
-    - name: user_email
-      data_type: VARCHAR
-    - name: group_id
-      data_type: VARCHAR
-    - name: tenant_id
-      data_type: VARCHAR
-    - name: tenant_name
-      data_type: VARCHAR
-    - name: group_name
-      data_type: VARCHAR
-    - name: group_type
-      data_type: VARCHAR
-    - name: created_date
-      data_type: VARCHAR
-    - name: is_active
-      data_type: BOOLEAN
+    - name: dept_id
+      data_type: INT
