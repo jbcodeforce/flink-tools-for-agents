@@ -18,6 +18,13 @@ from tools.dbt.flink_dbt_migrate.sl_discovery_mgr import (
     _find_pipelines_parent,
 )
 from tools.dbt.flink_dbt_migrate.discover_deps import build_pipelines_ddl_index
+from tools.dbt.flink_dbt_migrate.scaffold_missing_raws import (
+    find_undeclared_tables,
+    infer_columns_for_table,
+    generate_ddl_sql,
+    generate_dml_sql,
+    generate_sources_yaml,
+)
 from tools.dbt.flink_dbt_migrate.tracking_store import TrackingStore
 from tools.dbt.flink_dbt_migrate.migrate import (
     migrate_dml_to_dbt,
@@ -538,6 +545,129 @@ def migrate_one_file(
         print(result.sources_yml, end="")
     print(f"# DDL source: {result.ddl_path}", file=sys.stderr)
 
+
+
+@app.command()
+def scaffold_missing_raws(
+    pipelines_dir: Annotated[
+        Path,
+        typer.Argument(help="Root of the Flink pipelines tree to scan (e.g. ./pipelines)"),
+    ],
+    dbt_project_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="dbt project root — scaffolded files go under <dbt_project_dir>/models/raws/"
+        ),
+    ],
+    profile_name: Annotated[
+        str,
+        typer.Option(
+            "--profile",
+            help="dbt source profile name used in sources.yaml (default: 'cc_flink')",
+        ),
+    ] = "cc_flink",
+    write: Annotated[
+        bool,
+        typer.Option("--write", help="Write files to disk; without this flag only a dry-run report is printed"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite existing files in models/raws/"),
+    ] = False,
+) -> None:
+    """Scaffold Flink DDL + synthetic DML for tables referenced in pipelines but never declared.
+
+    Scans every DML file under PIPELINES_DIR, finds table names referenced in FROM/JOIN
+    clauses that have no matching CREATE TABLE DDL anywhere in the tree, then generates:
+
+    \\b
+      models/raws/<table_name>/ddl.<table_name>.sql  — CREATE TABLE (columns inferred from usage)
+      models/raws/<table_name>/dml.<table_name>.sql  — INSERT synthetic rows for CI testing
+      models/raws/sources.yaml                        — dbt source registration (merged idempotently)
+
+    Run without --write to preview the report and generated SQL without touching the filesystem.
+
+    \\b
+    Example
+    -------
+      flink-sql-migrate-dbt scaffold-missing-raws ./pipelines ./my_dbt_project --write
+    """
+    log = _get_logger()
+    pipelines_dir = pipelines_dir.resolve()
+    dbt_project_dir = dbt_project_dir.resolve()
+
+    typer.echo(f"Scanning {pipelines_dir} for undeclared tables …")
+    undeclared = find_undeclared_tables(pipelines_dir)
+
+    if not undeclared:
+        typer.echo("✓  No undeclared tables found — all referenced tables have DDL files.")
+        return
+
+    typer.echo(f"\nFound {len(undeclared)} undeclared table(s):\n")
+
+    # Build the DDL index once so column inference can reuse it.
+    ddl_index = build_pipelines_ddl_index(pipelines_dir)
+
+    raws_dir = dbt_project_dir / "models" / "raws"
+    table_entries: list[tuple[str, list]] = []
+
+    for table_name, dml_paths in sorted(undeclared.items()):
+        typer.echo(f"  {table_name}")
+        typer.echo(f"    referenced in: {', '.join(p.name for p in dml_paths)}")
+
+        columns = infer_columns_for_table(table_name, dml_paths, ddl_index)
+        typer.echo(f"    columns inferred: {len(columns)}")
+        for col in columns:
+            review_flag = "  ← TODO" if col.needs_review else ""
+            typer.echo(f"      {col.name:<30} {col.flink_type}{review_flag}")
+
+        ddl_sql = generate_ddl_sql(table_name, columns)
+        dml_sql = generate_dml_sql(table_name, columns)
+
+        table_dir = raws_dir / table_name
+        ddl_path = table_dir / f"ddl.{table_name}.sql"
+        dml_path_out = table_dir / f"dml.{table_name}.sql"
+
+        if not write:
+            typer.echo(f"\n    [dry-run] {ddl_path}")
+            typer.echo(ddl_sql)
+            typer.echo(f"    [dry-run] {dml_path_out}")
+            typer.echo(dml_sql)
+        else:
+            table_dir.mkdir(parents=True, exist_ok=True)
+
+            if ddl_path.exists() and not force:
+                typer.echo(f"    skip (exists) {ddl_path}  — use --force to overwrite", err=True)
+            else:
+                ddl_path.write_text(ddl_sql, encoding="utf-8")
+                typer.echo(f"    wrote {ddl_path}")
+                log.info("scaffold_missing_raws | wrote %s", ddl_path)
+
+            if dml_path_out.exists() and not force:
+                typer.echo(f"    skip (exists) {dml_path_out}  — use --force to overwrite", err=True)
+            else:
+                dml_path_out.write_text(dml_sql, encoding="utf-8")
+                typer.echo(f"    wrote {dml_path_out}")
+                log.info("scaffold_missing_raws | wrote %s", dml_path_out)
+
+        table_entries.append((table_name, columns))
+        typer.echo("")
+
+    # Always show / write sources.yaml
+    sources_path = raws_dir / "sources.yaml"
+    sources_yaml = generate_sources_yaml(profile_name, table_entries, existing_path=sources_path)
+
+    if not write:
+        typer.echo(f"[dry-run] {sources_path}")
+        typer.echo(sources_yaml)
+    else:
+        raws_dir.mkdir(parents=True, exist_ok=True)
+        sources_path.write_text(sources_yaml, encoding="utf-8")
+        typer.echo(f"wrote {sources_path}")
+        log.info("scaffold_missing_raws | wrote %s", sources_path)
+
+    if not write:
+        typer.echo("\nRun with --write to create the files above.")
 
 
 if __name__ == "__main__":
