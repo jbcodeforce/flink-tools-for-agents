@@ -296,13 +296,21 @@ def resolve_upstream_deps(
 
         # Use pipeline_definition.json index first, fall back to filesystem scan,
         # then fall back to the global pipelines-tree DDL index
-        if table_name in upstream_ddl_map:
-            ddl_path = upstream_ddl_map[table_name]
-        else:
-            ddl_path = discover_upstream_ddl(
-                source_project_dir, table_name, global_ddl_index=global_ddl_index
+        try:
+            if table_name in upstream_ddl_map:
+                ddl_path = upstream_ddl_map[table_name]
+            else:
+                ddl_path = discover_upstream_ddl(
+                    source_project_dir, table_name, global_ddl_index=global_ddl_index
+                )
+            ddl = parse_ddl(ddl_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            log.warning(
+                "resolve_upstream_deps | skipping unresolved upstream table=%s "
+                "(no DDL found); model will still be generated without source entry",
+                table_name,
             )
-        ddl = parse_ddl(ddl_path.read_text(encoding="utf-8"))
+            continue
         deps.append(
             UpstreamDep(
                 table_name=table_name,

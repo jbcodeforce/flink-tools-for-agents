@@ -31,9 +31,12 @@ show_create_table = \
 	sql_statement="show create table $2";\
 	confluent flink statement create $1 --sql "$$sql_statement" --database $(DB_NAME) --compute-pool $(CPOOLID)   --environment $(ENV_ID) --context $(CC_CONTEXT) --wait 
 
+# DROP_KIND can be overridden to "materialized table" in pipeline Makefiles that use a MT.
+DROP_KIND ?= table
+
 drop_table = \
-	sql_statement="drop table $2";\
-	confluent flink statement create $1 --sql "$$sql_statement" --database $(DB_NAME) --compute-pool $(CPOOLID)   --environment $(ENV_ID) --context $(CC_CONTEXT) --wait 
+	sql_statement="drop $(DROP_KIND) if exists \`$2\`";\
+	confluent flink statement create $1 --sql "$$sql_statement" --database $(DB_NAME) --compute-pool $(CPOOLID)   --environment $(ENV_ID) --context $(CC_CONTEXT) --wait
 
 describe_flink_statement = \
 	confluent flink statement describe $1 --cloud $(CLOUD) --region $(REGION) 

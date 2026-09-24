@@ -40,6 +40,10 @@ def classify_sql(sql: str) -> str:
         if " select " in s:
             return "streaming_dml"
         return "batch_dml"
+    # CREATE MATERIALIZED TABLE and CREATE OR ALTER MATERIALIZED TABLE
+    # must always run in streaming mode on Confluent Cloud.
+    if s.startswith(("create materialized table ", "create or alter materialized table ")):
+        return "streaming_ddl"
     if s.startswith("create table ") and " as select " in s:
         return "streaming_ddl"
     if s.startswith(("create table ", "drop table ")):
@@ -325,12 +329,14 @@ def drop_table(
     table: str,
     statement_name: str,
     *,
+    materialized: bool = False,
     timeout: float | None = None,
     poll: float | None = None,
     sleep: SleepFn = time.sleep,
 ) -> None:
-    """Submit DROP TABLE IF EXISTS and delete the ephemeral statement."""
-    sql = f"DROP TABLE IF EXISTS `{table}`"
+    """Submit DROP TABLE IF EXISTS (or DROP MATERIALIZED TABLE IF EXISTS) and delete the ephemeral statement."""
+    kind = "MATERIALIZED TABLE" if materialized else "TABLE"
+    sql = f"DROP {kind} IF EXISTS `{table}`"
     create_statement(
         conn,
         config,

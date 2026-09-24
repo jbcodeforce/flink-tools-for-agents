@@ -610,7 +610,7 @@ def collect_cte_names(body: str) -> set[str]:
         pos = re.match(r"WITH\s+", stripped, re.IGNORECASE).end()
         rest = stripped[pos:]
         while rest:
-            match = re.match(r"(`[^`]+`|[\w]+)\s+AS\s+\(", rest, re.IGNORECASE)
+            match = re.match(r"(`[^`]+`|[\w]+)\s+AS\s*\(", rest, re.IGNORECASE)
             if not match:
                 break
             names.add(strip_identifier(match.group(1)))
@@ -635,7 +635,7 @@ def collect_cte_names(body: str) -> set[str]:
 
     # Also capture any inline CTE aliases anywhere in the body
     # Pattern: word/backtick-name followed by AS (
-    for match in re.finditer(r"\b(`[^`]+`|[\w]+)\s+[Aa][Ss]\s+\(", clean):
+    for match in re.finditer(r"\b(`[^`]+`|[\w]+)\s+[Aa][Ss]\s*\(", clean):
         names.add(strip_identifier(match.group(1)))
 
     return names

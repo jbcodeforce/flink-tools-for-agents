@@ -942,3 +942,22 @@ def test_escape_jinja_emit_model_sql_contains_escape() -> None:
     assert "{{ '{%' }}" in sql
     # The raw sequence must not survive anywhere in the output.
     assert "LIKE '{%'" not in sql
+
+
+def test_rewrite_refs_does_not_rewrite_inside_comments() -> None:
+    """Comments containing SQL keywords (e.g. INNER JOIN to) must not be rewritten into ref calls."""
+    from tools.dbt.flink_dbt_migrate.rewrite_refs import rewrite_refs
+
+    sql = """\
+-- Non-delete records with INNER JOIN to combined tenant list
+SELECT o.order_id, c.tenant_name
+FROM orders o
+INNER JOIN customers c ON o.customer_id = c.id
+/* Another INNER JOIN to verify block comments */
+"""
+    result = rewrite_refs(sql, cte_names=set())
+    assert "-- Non-delete records with INNER JOIN to combined tenant list" in result
+    assert "/* Another INNER JOIN to verify block comments */" in result
+    assert "{{ ref('to') }}" not in result
+    assert "FROM {{ ref('orders') }} o" in result
+    assert "INNER JOIN {{ ref('customers') }} c" in result

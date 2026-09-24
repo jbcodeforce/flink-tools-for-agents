@@ -31,7 +31,7 @@ from tools.flink.cc_deploy.statement_lifecycle import (
     submit_statement as lifecycle_submit_statement,
     wait_for_phase as lifecycle_wait_for_phase,
 )
-from tools.flink.manifest.manifest import DEFAULT_USER_AGENT, DeployManifest, StatementRef
+from tools.flink.manifest.manifest import DEFAULT_USER_AGENT, DeployManifest, DropTableRef, StatementRef
 
 
 def get_config() -> dict[str, str]:
@@ -217,29 +217,34 @@ def run_drop_table(
     config: dict[str, str],
     table: str,
     statement_name: str,
+    *,
+    materialized: bool = False,
 ) -> None:
     from tools.flink.cc_deploy.statement_lifecycle import drop_table as lifecycle_drop_table
 
     print(f"Dropping table: {table} (statement: {statement_name})")
     try:
-        lifecycle_drop_table(conn, config, table, statement_name)
+        lifecycle_drop_table(conn, config, table, statement_name, materialized=materialized)
     except (StatementLifecycleError, OperationalError, RuntimeError) as exc:
         print(f"  warning: could not drop {table}: {exc}", file=sys.stderr)
         return
 
 
 def drop_tables(
-    tables: list[str],
+    tables: list[DropTableRef],
     *,
     manifest: DeployManifest,
     config: dict[str, str],
 ) -> None:
-    drop_tables_by_name(
-        tables,
-        config=config,
-        statement_prefix=manifest.drop_statement_prefix or "drop",
-        user_agent=manifest.user_agent,
-    )
+    statement_prefix = manifest.drop_statement_prefix or "drop"
+    user_agent = manifest.user_agent
+    if not tables:
+        return
+    print("Dropping tables...")
+    with flink_connection(config, user_agent=user_agent) as conn:
+        for ref in tables:
+            statement_name = drop_statement_name_for_table(statement_prefix, ref.table)
+            run_drop_table(conn, config, ref.table, statement_name, materialized=ref.materialized)
 
 
 def drop_statement_name_for_table(statement_prefix: str, table: str) -> str:
@@ -255,6 +260,7 @@ def drop_tables_by_name(
     config: dict[str, str],
     statement_prefix: str = "cleanup-drop",
     user_agent: str = DEFAULT_USER_AGENT,
+    materialized: bool = False,
 ) -> None:
     """Drop Flink SQL tables by name without a deploy manifest."""
     if not tables:
@@ -263,7 +269,7 @@ def drop_tables_by_name(
     with flink_connection(config, user_agent=user_agent) as conn:
         for table in tables:
             statement_name = drop_statement_name_for_table(statement_prefix, table)
-            run_drop_table(conn, config, table, statement_name)
+            run_drop_table(conn, config, table, statement_name, materialized=materialized)
 
 
 def full_undeploy(

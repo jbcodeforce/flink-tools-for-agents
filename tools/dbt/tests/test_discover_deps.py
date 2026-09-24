@@ -109,3 +109,81 @@ def test_resolve_upstream_deps_with_known_models() -> None:
     # d04_products is not known -> source
     assert deps[1].resolution == "source"
     assert deps[1].source_name == "cc_flink"
+
+
+def test_resolve_upstream_deps_missing_ddl_skipped(tmp_path: Path) -> None:
+    """An upstream table whose DDL cannot be found is skipped with a warning.
+
+    The model and schema.yml must still be generated — only the unresolvable
+    source entry is omitted from the returned dep list.
+    """
+    sql_scripts = tmp_path / "sql-scripts"
+    sql_scripts.mkdir()
+    # known_table has a DDL; unknown_table does not
+    (sql_scripts / "ddl.known_table.sql").write_text(
+        "CREATE TABLE known_table (id INT) WITH ('connector' = 'kafka');",
+        encoding="utf-8",
+    )
+
+    dml_sql = (
+        "INSERT INTO my_model\n"
+        "SELECT a.id FROM known_table a JOIN unknown_table b ON a.id = b.id"
+    )
+    dml = parse_dml(dml_sql)
+
+    deps = resolve_upstream_deps(
+        sql_scripts,
+        None,
+        dml,
+        source_name="my_source",
+    )
+
+    dep_names = [d.table_name for d in deps]
+    # known_table resolved normally
+    assert "known_table" in dep_names
+    # unknown_table silently skipped — no exception raised
+    assert "unknown_table" not in dep_names
+
+
+
+
+def test_resolve_upstream_deps_cte_no_space_before_paren(tmp_path: Path) -> None:
+    """CTE defined with no space between AS and ( must not be treated as an upstream table.
+
+    Flink SQL (and common formatting) allows ``name as(`` without a space before the
+    opening parenthesis.  collect_cte_names previously required at least one space,
+    so it missed the CTE name and incorrectly passed it to the DDL lookup —
+    causing a FileNotFoundError.
+    """
+    sql_scripts = tmp_path / "sql-scripts"
+    sql_scripts.mkdir()
+    (sql_scripts / "ddl.src_raw.sql").write_text(
+        "CREATE TABLE src_raw (id INT) WITH ('connector' = 'kafka');",
+        encoding="utf-8",
+    )
+
+    # Mirrors the real pattern: INSERT INTO ... WITH cte as( ... ) SELECT * FROM cte
+    dml_sql = (
+        "INSERT INTO stage_training_assignment\n"
+        "WITH\n"
+        "training_assignment as(\n"
+        "    SELECT id FROM src_raw\n"
+        "),\n"
+        "final as (SELECT id FROM training_assignment)\n"
+        "SELECT * FROM final"
+    )
+    dml = parse_dml(dml_sql)
+
+    deps = resolve_upstream_deps(
+        sql_scripts,
+        None,
+        dml,
+        source_name="my_source",
+    )
+
+    dep_names = [d.table_name for d in deps]
+    # Neither CTE name should appear as an upstream dep
+    assert "training_assignment" not in dep_names
+    assert "final" not in dep_names
+    # The real upstream table inside the CTE body should be resolved
+    assert "src_raw" in dep_names

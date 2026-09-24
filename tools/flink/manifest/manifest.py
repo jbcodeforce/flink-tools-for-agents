@@ -22,10 +22,22 @@ _CREATE_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CREATE_MATERIALIZED_TABLE_RE = re.compile(
+    r"create\s+(?:or\s+alter\s+)?materialized\s+table\s+(?:if\s+not\s+exists\s+)?([`\"]?[\w.]+[`\"]?)",
+    re.IGNORECASE,
+)
+
 
 class StatementRef(BaseModel):
     name: str
     file: str
+
+
+class DropTableRef(BaseModel):
+    """A table to drop during teardown, with an optional materialized-table flag."""
+
+    table: str
+    materialized: bool = False
 
 
 class DeployManifest(BaseModel):
@@ -35,7 +47,7 @@ class DeployManifest(BaseModel):
     groups: dict[str, list[StatementRef]] = Field(default_factory=dict)
     deploy_all: list[str] = Field(default_factory=list)
     undeploy_all: list[str] = Field(default_factory=list)
-    drop_tables: list[str] = Field(default_factory=list)
+    drop_tables: list[DropTableRef] = Field(default_factory=list)
     drop_statement_prefix: str | None = None
 
     @model_validator(mode="before")
@@ -46,12 +58,14 @@ class DeployManifest(BaseModel):
 
         groups = data.get("groups") or {}
         drop_tables = data.get("drop_tables", [])
-        if (
-            isinstance(drop_tables, list)
-            and drop_tables
-            and isinstance(drop_tables[0], dict)
-        ):
-            data = {**data, "drop_tables": [entry["table"] for entry in drop_tables]}
+        if isinstance(drop_tables, list) and drop_tables:
+            first = drop_tables[0]
+            if isinstance(first, str):
+                # Legacy flat list: ["table_a", "table_b"]
+                data = {**data, "drop_tables": [{"table": t} for t in drop_tables]}
+            elif isinstance(first, dict) and "table" in first and "materialized" not in first:
+                # Legacy dict list without materialized key (old {"table": ...} format)
+                data = {**data, "drop_tables": [{"table": e["table"], "materialized": False} for e in drop_tables]}
 
         deploy_all = data.get("deploy_all")
         if not deploy_all:
@@ -160,13 +174,18 @@ def _statement_name(prefix: str, group: str, rel_path: str) -> str:
     return f"{prefix}-{group}-{slug}"
 
 
-def _extract_table_name_from_ddl(path: Path) -> str | None:
-    """Return the table name from a CREATE TABLE DDL file."""
-    match = _CREATE_TABLE_RE.search(path.read_text(encoding="utf-8"))
+def _extract_table_name_from_ddl(path: Path) -> DropTableRef | None:
+    """Return a DropTableRef from a CREATE TABLE or CREATE MATERIALIZED TABLE DDL file."""
+    sql = path.read_text(encoding="utf-8")
+    mt_match = _CREATE_MATERIALIZED_TABLE_RE.search(sql)
+    if mt_match:
+        name = mt_match.group(1).strip("`\"").split(".")[-1]
+        return DropTableRef(table=name, materialized=True)
+    match = _CREATE_TABLE_RE.search(sql)
     if not match:
         return None
-    name = match.group(1).strip("`\"")
-    return name.split(".")[-1]
+    name = match.group(1).strip("`\"").split(".")[-1]
+    return DropTableRef(table=name, materialized=False)
 
 
 _SKIP_DIR_NAMES = frozenset({".git", "__pycache__", "node_modules", ".venv"})
@@ -202,14 +221,20 @@ def _default_undeploy_all(groups: dict[str, list[StatementRef]]) -> list[str]:
     return [group for group in order if group in groups]
 
 
-def _infer_drop_tables(ddl_files: list[Path]) -> list[str]:
-    """Infer drop_tables order: dependents first (reverse ddl filename order)."""
-    tables: list[str] = []
-    for path in sorted(ddl_files):
-        table = _extract_table_name_from_ddl(path)
-        if table:
-            tables.append(table)
-    return list(reversed(tables))
+def _infer_drop_tables(all_sql_files: list[Path]) -> list[DropTableRef]:
+    """Infer drop_tables from all SQL files, detecting CREATE [MATERIALIZED] TABLE.
+
+    Scans every SQL file (not just ddl.*) because users may define tables in any
+    file. Deduplicates by table name; if the same table appears in multiple files
+    the first occurrence in sorted order wins. Returns tables in reverse sorted
+    order (dependents first / later-defined tables dropped first).
+    """
+    seen: dict[str, DropTableRef] = {}
+    for path in sorted(all_sql_files):
+        ref = _extract_table_name_from_ddl(path)
+        if ref and ref.table not in seen:
+            seen[ref.table] = ref
+    return list(reversed(list(seen.values())))
 
 
 def create_manifest_from_folder(
@@ -255,19 +280,18 @@ def create_manifest_from_folder(
     user_agent = user_agent or DEFAULT_USER_AGENT
 
     groups: dict[str, list[StatementRef]] = {}
-    ddl_files: list[Path] = []
+    all_sql_files: list[Path] = []
 
     for path in _discover_sql_files(sql_dir):
         rel = path.relative_to(sql_dir).as_posix()
         group = _classify_sql_file(path.name)
-        if group == "ddl":
-            ddl_files.append(path)
+        all_sql_files.append(path)
         entry = StatementRef(name=_statement_name(prefix, group, rel), file=rel)
         groups.setdefault(group, []).append(entry)
 
     deploy_all = _default_deploy_all(groups)
     undeploy_all = _default_undeploy_all(groups)
-    drop_tables = _infer_drop_tables(ddl_files)
+    drop_tables = _infer_drop_tables(all_sql_files)
 
     manifest = DeployManifest(
         user_agent=user_agent,
@@ -512,20 +536,22 @@ def create_manifest_from_dbt_folder(
     undeploy_all = [g for g in _DBT_UNDEPLOY_ORDER if g in groups]
 
     # drop_tables: model/seed tables in undeploy order (dependents first), then raw sources.
+    # dbt models are never materialized tables.
     group_to_model_names: dict[str, list[str]] = {}
     for node in nodes:
         grp = _dbt_group_for_node(node["path"], node["resource_type"])
         group_to_model_names.setdefault(grp, []).append(node["name"])
 
-    drop_tables: list[str] = []
+    drop_tables: list[DropTableRef] = []
     for grp in undeploy_all:
-        drop_tables.extend(group_to_model_names.get(grp, []))
+        drop_tables.extend(DropTableRef(table=n) for n in group_to_model_names.get(grp, []))
 
     # Append raw source tables (leaf inputs, dropped last)
     raw_sources = _read_dbt_source_tables(project_root)
+    existing_names = {ref.table for ref in drop_tables}
     for src in raw_sources:
-        if src not in drop_tables:
-            drop_tables.append(src)
+        if src not in existing_names:
+            drop_tables.append(DropTableRef(table=src))
 
     drop_statement_prefix = _sanitize(f"{prefix}{project_name}-drop")
 

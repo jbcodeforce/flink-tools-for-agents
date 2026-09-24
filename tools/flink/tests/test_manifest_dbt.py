@@ -31,6 +31,7 @@ from tools.flink.manifest.manifest import (
     _read_dbt_source_tables,
     _read_statement_name_prefix,
     create_manifest_from_dbt_folder,
+    DropTableRef,
 )
 
 # ---------------------------------------------------------------------------
@@ -288,17 +289,20 @@ def test_create_manifest_from_dbt_folder_airbnb() -> None:
 
     # drop_tables has raw sources appended at the end
     raw_sources = _read_dbt_source_tables(_AIRBNB)
+    drop_table_names = [ref.table for ref in manifest.drop_tables]
     for src in raw_sources:
-        assert src in manifest.drop_tables
+        assert src in drop_table_names
     # raw sources come after model tables
     if raw_sources:
         last_model_idx = max(
-            manifest.drop_tables.index(n)
-            for n in manifest.drop_tables
+            drop_table_names.index(n)
+            for n in drop_table_names
             if n not in raw_sources
         )
-        first_raw_idx = manifest.drop_tables.index(raw_sources[0])
+        first_raw_idx = drop_table_names.index(raw_sources[0])
         assert first_raw_idx > last_model_idx
+    # dbt models are never materialized tables
+    assert all(not ref.materialized for ref in manifest.drop_tables)
 
     # drop_statement_prefix is set and sanitized
     assert manifest.drop_statement_prefix

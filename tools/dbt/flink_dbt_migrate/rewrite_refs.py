@@ -55,14 +55,39 @@ def rewrite_refs(
         rf"(\bFROM\s+)(`?[\w]+`?){_TABLE_TAIL}{_NOT_SUBQUERY}",
         re.IGNORECASE,
     )
-    sql = from_pattern.sub(replace_table_ref, sql)
-
     join_pattern = re.compile(
         rf"(\b(?:JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|"
         rf"FULL\s+JOIN|CROSS\s+JOIN)\s+)(`?[\w]+`?){_TABLE_TAIL}{_NOT_SUBQUERY}",
         re.IGNORECASE,
     )
-    sql = join_pattern.sub(replace_table_ref, sql)
-
     table_pattern = re.compile(r"(\bTABLE\s+)(`?[\w]+`?)\b", re.IGNORECASE)
-    return table_pattern.sub(replace_table_ref, sql)
+
+    # Tokenize SQL into string literals, comments (line and block), and code segments.
+    # Only rewrite table references in non-comment, non-string code segments.
+    token_pattern = re.compile(
+        r"('(?:[^']|'')*')"  # single-quoted string literal
+        r"|(--[^\n]*)"       # line comment
+        r"|(/\*[\s\S]*?\*/)" # block comment
+    )
+
+    def rewrite_segment(segment: str) -> str:
+        segment = from_pattern.sub(replace_table_ref, segment)
+        segment = join_pattern.sub(replace_table_ref, segment)
+        segment = table_pattern.sub(replace_table_ref, segment)
+        return segment
+
+    parts: list[str] = []
+    last_end = 0
+    for match in token_pattern.finditer(sql):
+        # Code before the matched token
+        if match.start() > last_end:
+            parts.append(rewrite_segment(sql[last_end : match.start()]))
+        # Matched token (string literal or comment) is preserved as-is
+        parts.append(match.group(0))
+        last_end = match.end()
+
+    # Remaining code after the last match
+    if last_end < len(sql):
+        parts.append(rewrite_segment(sql[last_end:]))
+
+    return "".join(parts)

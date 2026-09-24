@@ -453,6 +453,18 @@ class TestCollectCteNames:
         result = collect_cte_names(body)
         assert "my cte" in result
 
+    def test_cte_name_no_space_before_paren(self):
+        # Flink SQL commonly omits the space between AS and (: `name as(`
+        body = "WITH cte1 AS (SELECT 1), cte2 as(SELECT 2) SELECT * FROM cte1, cte2"
+        result = collect_cte_names(body)
+        assert result == {"cte1", "cte2"}
+
+    def test_cte_name_no_space_inline_fallback(self):
+        # The fallback regex must also handle the no-space variant
+        body = "SELECT * FROM (SELECT 1) t1, myalias as(SELECT 2)"
+        result = collect_cte_names(body)
+        assert "myalias" in result
+
 
 # ===========================================================================
 # is_ctas
