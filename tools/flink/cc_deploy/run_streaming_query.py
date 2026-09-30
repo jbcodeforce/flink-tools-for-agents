@@ -3,15 +3,18 @@
 Run a streaming query against a Flink table on Confluent Cloud (confluent-sql REST API).
 
 Examples:
-  uv run python -m cc_deploy.run_streaming_query --table orders
-  uv run python -m cc_deploy.run_streaming_query --sql "SELECT * FROM orders WHERE amount > 100"
-  uv run python -m cc_deploy.run_streaming_query --table orders --max-rows 20 --output json
+  uv run flink-sql-stream --table orders
+  uv run flink-sql-stream --sql "SELECT * FROM orders WHERE amount > 100"
+  uv run flink-sql-stream --table orders --max-rows 20 --output json
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
+from enum import Enum
+from typing import Optional
+
+import typer
 
 from tools.flink.cc_deploy.deploy_flink_statements import load_dotenv_file
 from tools.flink.cc_deploy.flink_deploy import (
@@ -22,112 +25,123 @@ from tools.flink.cc_deploy.flink_deploy import (
 )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run a streaming query on a Confluent Cloud Flink table."
-    )
-    target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument(
+class OutputFormat(str, Enum):
+    table = "table"
+    json = "json"
+    csv = "csv"
+
+
+app = typer.Typer(
+    add_completion=False,
+    help="Run a streaming query on a Confluent Cloud Flink table.",
+)
+
+
+@app.command()
+def main(
+    table: Optional[str] = typer.Option(
+        None,
         "--table",
         help="Table to query (simple name or fully qualified identifier)",
-    )
-    target.add_argument(
+    ),
+    sql: Optional[str] = typer.Option(
+        None,
         "--sql",
         help="Full SQL to run as a streaming query (overrides --table builder options)",
-    )
-
-    parser.add_argument(
+    ),
+    columns: str = typer.Option(
+        "*",
         "--columns",
-        default="*",
         help="Column list for generated SELECT when using --table (default: *)",
-    )
-    parser.add_argument(
+    ),
+    where: Optional[str] = typer.Option(
+        None,
         "--where",
-        default=None,
         help="Optional WHERE clause (without the WHERE keyword) for --table",
-    )
-    parser.add_argument(
+    ),
+    limit: Optional[int] = typer.Option(
+        None,
         "--limit",
-        type=int,
-        default=None,
         help="Optional LIMIT for generated SELECT when using --table",
-    )
-    parser.add_argument(
+    ),
+    statement_name: Optional[str] = typer.Option(
+        None,
         "--statement-name",
-        default=None,
         help="Optional Flink statement name (default: stream-<table>-<timestamp>)",
-    )
-    parser.add_argument(
+    ),
+    output: OutputFormat = typer.Option(
+        OutputFormat.table,
         "--output",
-        choices=("table", "json", "csv"),
-        default="table",
         help="Per-row output format (default: table)",
-    )
-    parser.add_argument(
+    ),
+    as_dict: bool = typer.Option(
+        False,
         "--as-dict",
-        action="store_true",
         help="Fetch rows as dicts internally",
-    )
-    parser.add_argument(
+    ),
+    timeout: int = typer.Option(
+        STATEMENT_TIMEOUT_SEC,
         "--timeout",
-        type=int,
-        default=STATEMENT_TIMEOUT_SEC,
         help=f"Statement startup timeout in seconds (default: {STATEMENT_TIMEOUT_SEC})",
-    )
-    parser.add_argument(
+    ),
+    max_rows: Optional[int] = typer.Option(
+        None,
         "--max-rows",
-        type=int,
-        default=None,
         help="Stop after printing this many rows (default: run until Ctrl+C)",
-    )
-    parser.add_argument(
+    ),
+    keep_statement: bool = typer.Option(
+        False,
         "--keep-statement",
-        action="store_true",
         help="Do not delete the Flink statement after stopping",
-    )
-    parser.add_argument(
+    ),
+    quiet_meta: bool = typer.Option(
+        False,
         "--quiet-meta",
-        action="store_true",
         help="Suppress statement metadata on stderr",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
+    ),
+) -> None:
+    """Load environment variables and run the streaming query."""
     load_dotenv_file()
-    args = parse_args()
 
-    if args.sql:
-        sql = args.sql.strip()
-        statement_name = args.statement_name or default_streaming_statement_name("custom")
+    if not table and not sql:
+        typer.echo("Error: one of --table or --sql is required.", err=True)
+        raise typer.Exit(code=1)
+    if table and sql:
+        typer.echo("Error: --table and --sql are mutually exclusive.", err=True)
+        raise typer.Exit(code=1)
+
+    if sql:
+        resolved_sql = sql.strip()
+        resolved_name = statement_name or default_streaming_statement_name("custom")
     else:
+        assert table is not None
         try:
-            sql = build_select_sql(
-                args.table,
-                columns=args.columns,
-                limit=args.limit,
-                where=args.where,
+            resolved_sql = build_select_sql(
+                table,
+                columns=columns,
+                limit=limit,
+                where=where,
             )
         except ValueError as exc:
             print(exc, file=sys.stderr)
-            sys.exit(1)
-        statement_name = args.statement_name or default_streaming_statement_name(args.table)
+            raise typer.Exit(code=1) from exc
+        resolved_name = statement_name or default_streaming_statement_name(table)
 
     try:
         run_streaming_query(
-            sql,
-            statement_name=statement_name,
-            as_dict=args.as_dict,
-            timeout=args.timeout,
-            output=args.output,
-            max_rows=args.max_rows,
-            show_meta=not args.quiet_meta,
-            delete_statement=not args.keep_statement,
+            resolved_sql,
+            statement_name=resolved_name,
+            as_dict=as_dict,
+            timeout=timeout,
+            output=output.value,
+            max_rows=max_rows,
+            show_meta=not quiet_meta,
+            delete_statement=not keep_statement,
         )
     except (RuntimeError, ValueError) as exc:
         print(exc, file=sys.stderr)
-        sys.exit(1)
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":
-    main()
+    app()

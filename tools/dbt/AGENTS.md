@@ -26,12 +26,11 @@ Convert Flink SQL DML statements into dbt streaming models, scaffold shift-left 
 
 | File | Type | Role |
 |---|---|---|
-| `sl_dbt.py` | CLI | Scaffold and manage shift-left dbt projects |
+| `sl_dbt.py` | CLI | Scaffold and manage shift-left dbt projects; `get-schema-existing-topic-to-dbt` generates dbt source/model YAML from Schema Registry schemas |
 | `sql_to_dbt_yaml.py` | CLI | Generate dbt model YAML from SQL SELECT statements |
-| `sr_to_dbt_yaml.py` | CLI | Generate dbt source/model YAML from Schema Registry schemas |
 | `sql_parser.py` | Library | Shared SQL parsing utilities |
 | `model_resolver.py` | Library | Resolves model names and paths within a dbt project |
-| `schema_registry_helpers.py` | Library | Schema Registry API helpers used by `sr_to_dbt_yaml.py` |
+| `schema_registry_helpers.py` | Library | Schema Registry API helpers used by `sl_dbt.py`'s `get-schema-existing-topic-to-dbt` command |
 | `type_inferrer.py` | Library | Infers dbt column types from SQL expressions |
 
 ## Agent Tasks
@@ -47,6 +46,12 @@ Convert Flink SQL DML statements into dbt streaming models, scaffold shift-left 
 - SQL parsing is centralised in `flink_dbt_migrate.flink_sql_processor.py` and `sql_parser.py` — do not duplicate code
 - `flink_dbt_migrate.dbt_element_mgr.py` handles all file writes; never write dbt files directly from other modules
 - `tmp/` is a scratch directory for migration work — never commit its contents
+- `schema_registry_helpers.schema_to_columns` auto-detects a Debezium CDC envelope (fields
+  `before`/`after`/`op`) and builds columns from `after` — the real row shape — instead of the
+  envelope itself; it also resolves Avro's named-type-reuse shorthand (e.g. `after` referencing
+  the `Value` record `before` already defines) and recurses into nested records/arrays to build
+  hierarchical `row<...>`/`array<row<...>>` types rather than collapsing them to `string`. Use
+  `is_debezium_envelope(schema, schema_type)` to detect this case separately (e.g. to log it).
 
 
 

@@ -41,3 +41,6 @@ site/
 # Logs
 *.log
 logs/
+
+# Flink deploy tools: local per-machine ledger of successfully deployed statements
+.deploy_state.json

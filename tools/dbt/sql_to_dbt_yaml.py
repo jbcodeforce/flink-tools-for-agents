@@ -10,7 +10,7 @@ Resolves column names and data types by:
    ``COALESCE``, plain pass-throughs, and aliases.
 
 The output is printed to stdout in the same format produced by
-``sr_to_dbt_yaml.py --output model``.
+``sl-dbt get-schema-existing-topic-to-dbt --output model``.
 
 Examples::
 

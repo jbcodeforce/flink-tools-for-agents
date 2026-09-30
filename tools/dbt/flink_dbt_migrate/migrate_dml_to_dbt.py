@@ -26,6 +26,8 @@ from tools.dbt.flink_dbt_migrate.scaffold_missing_raws import (
     generate_sources_yaml,
 )
 from tools.dbt.flink_dbt_migrate.tracking_store import TrackingStore
+from tools.dbt.flink_dbt_migrate.add_constraints import scan_and_update_models_constraints
+from tools.dbt.flink_dbt_migrate.add_tags import read_product_name, inject_tags_into_config
 from tools.dbt.flink_dbt_migrate.migrate import (
     migrate_dml_to_dbt,
     migrate_values_dml_to_seed,
@@ -672,3 +674,128 @@ def scaffold_missing_raws(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command()
+def add_key_constraints(
+    dbt_project_dir: Annotated[
+        Path,
+        typer.Argument(help="dbt project root containing models/"),
+    ],
+    write: Annotated[
+        bool,
+        typer.Option("--write", help="Write updated schema.yml files to disk (default: dry-run)"),
+    ] = False,
+) -> None:
+    """Scan dbt models for distributed_by and add primary key / not_null constraints to schema.yml files."""
+    log = _get_logger()
+    log.info("add_key_constraints | dbt_project_dir=%s write=%s", dbt_project_dir, write)
+
+    models_dir = dbt_project_dir.resolve()
+    if (models_dir / "models").is_dir():
+        models_dir = models_dir / "models"
+
+    if not models_dir.is_dir():
+        typer.echo(f"Error: models directory not found under {dbt_project_dir}", err=True)
+        raise typer.Exit(1)
+
+    updates = scan_and_update_models_constraints(models_dir, write=write)
+
+    if not updates:
+        typer.echo("All models already have matching key constraints — nothing to update.")
+        raise typer.Exit(0)
+
+    for upd in updates:
+        action = "✓" if write else "~"
+        mode_suffix = "" if write else " (dry-run)"
+        cols = ", ".join(upd.updated_columns)
+        typer.echo(f"  {action}  {upd.model_name}: added constraints for [{cols}]{mode_suffix}")
+
+    typer.echo(f"\n{len(updates)} model schema(s) {'updated' if write else 'would be updated'}.")
+    if not write:
+        typer.echo("Run with --write to apply changes.")
+
+
+@app.command()
+def add_tags(
+    pipelines_dir: Annotated[
+        Path,
+        typer.Argument(help="Root of the source pipelines tree (contains pipeline_definition.json files)"),
+    ],
+    dbt_project_dir: Annotated[
+        Path,
+        typer.Argument(help="dbt project root; tracking.yml and models/ must already exist"),
+    ],
+    write: Annotated[
+        bool,
+        typer.Option("--write", help="Write patched SQL files to disk (default: dry-run)"),
+    ] = False,
+) -> None:
+    """Inject tags=['<product_name>'] into {{ config(...) }} blocks of migrated dbt SQL models."""
+    log = _get_logger()
+    log.info("add_tags | pipelines_dir=%s dbt_project_dir=%s write=%s", pipelines_dir, dbt_project_dir, write)
+
+    pipelines_dir = pipelines_dir.resolve()
+    dbt_project_dir = dbt_project_dir.resolve()
+    tracking_path = dbt_project_dir / "tracking.yml"
+
+    if not tracking_path.is_file():
+        typer.echo(f"Error: tracking file not found at {tracking_path}", err=True)
+        raise typer.Exit(1)
+
+    store = TrackingStore.load(tracking_path)
+    records = list(store._records.values())
+
+    if not records:
+        typer.echo("tracking.yml is empty — nothing to tag.")
+        raise typer.Exit(0)
+
+    patched = 0
+    already_tagged = 0
+    skipped = 0
+
+    for rec in records:
+        table_name = rec.table_name
+        relative_path = rec.relative_path
+
+        pipeline_def_path = pipelines_dir / relative_path / "pipeline_definition.json"
+        if not pipeline_def_path.is_file():
+            typer.echo(f"  ⚠  {table_name}: pipeline_definition.json not found — skipped")
+            log.warning("add_tags | pipeline_def not found: %s", pipeline_def_path)
+            skipped += 1
+            continue
+
+        try:
+            product_name = read_product_name(pipeline_def_path)
+        except (KeyError, Exception) as exc:  # noqa: BLE001
+            typer.echo(f"  ⚠  {table_name}: could not read product_name ({exc}) — skipped", err=True)
+            skipped += 1
+            continue
+
+        sql_path = dbt_project_dir / "models" / relative_path / f"{table_name}.sql"
+        if not sql_path.is_file():
+            typer.echo(f"  ⚠  {table_name}: SQL model not found at {sql_path} — skipped")
+            log.warning("add_tags | sql model not found: %s", sql_path)
+            skipped += 1
+            continue
+
+        original = sql_path.read_text(encoding="utf-8")
+        new_content, changed = inject_tags_into_config(original, product_name)
+
+        if not changed:
+            already_tagged += 1
+            typer.echo(f"  –  {table_name}: already tagged")
+            continue
+
+        if write:
+            sql_path.write_text(new_content, encoding="utf-8")
+            typer.echo(f"  ✓  {table_name}: tagged with '{product_name}'")
+            log.info("add_tags | patched %s with tag=%s", sql_path, product_name)
+        else:
+            typer.echo(f"  ~  {table_name}: would tag with '{product_name}' (dry-run)")
+
+        patched += 1
+
+    typer.echo(f"\n{patched} patched, {already_tagged} already tagged, {skipped} skipped.")
+    if not write and patched > 0:
+        typer.echo("Run with --write to apply changes.")

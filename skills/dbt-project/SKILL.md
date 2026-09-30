@@ -17,6 +17,7 @@ or managing shift-left dbt projects, using the CLI tools from **flink-tools-for-
 | `sl-dbt init` | Scaffold a new dbt streaming project |
 | `sl-dbt add-data-product` | Add a data product subdirectory |
 | `sl-dbt add-table` | Add a table (model/seed/source) to a data product |
+| `sl-dbt get-schema-existing-topic-to-dbt` | Generate dbt source/model YAML from a Schema Registry schema |
 
 ## Migrate a single Flink DML file
 
@@ -162,21 +163,30 @@ uv run sl-dbt add-table ./my-project fct_order_summary orders_domain --table-typ
 
 ## Generate dbt YAML from Schema Registry
 
-```bash
-# sources: block for models/sources.yaml
-uv run python -m tools.dbt.sr_to_dbt_yaml orders_topic \
-  --output sources \
-  --sr-url https://psrc-xxx.region.aws.confluent.cloud
+Requires an initialized project (`sl-dbt init` first). `--output sources` (default) upserts a
+table entry into `<pipelines_dir>/models/sources.yaml`, keyed under the project's dbt profile,
+generalizing the same merge helper `add-raw-topic` uses. `--output model` writes a standalone
+`<pipelines_dir>/models/<schema-name>.yml`, overwritten on every run so it always reflects the
+current schema. Either way the YAML block is also printed to stdout.
 
-# models: block for a staging model
-uv run python -m tools.dbt.sr_to_dbt_yaml orders_topic \
+If the fetched schema is a Debezium CDC envelope (has `before`/`after`/`op` fields — e.g. from a
+Confluent CDC source connector), columns are built from `after` (the real row shape) instead of
+the envelope's own fields, and a note is printed. Nested structs become hierarchical `row<...>`
+types instead of collapsing to `string`.
+
+```bash
+# sources: upsert into <pipelines_dir>/models/sources.yaml
+uv run sl-dbt get-schema-existing-topic-to-dbt ./my-project orders_topic --output sources
+
+# model: write <pipelines_dir>/models/stg_orders.yml
+uv run sl-dbt get-schema-existing-topic-to-dbt ./my-project orders_topic \
   --output model \
   --schema-name stg_orders
 ```
 
-Required env vars:
+Credentials are loaded automatically from `~/.confluent/.env` (or repo-root `.env`); required env vars if setting them directly:
 ```bash
-SCHEMA_REGISTRY_URL=<url>
+SCHEMA_REGISTRY_ENDPOINT=<url>
 SCHEMA_REGISTRY_API_KEY=<key>
 SCHEMA_REGISTRY_API_SECRET=<secret>
 ```

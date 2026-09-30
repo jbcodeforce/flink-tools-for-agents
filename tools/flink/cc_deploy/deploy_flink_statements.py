@@ -3,10 +3,10 @@
 Generic CLI to deploy Flink SQL statement groups via confluent-sql (REST API).
 
 Usage:
-  uv run python -m cc_deploy.deploy_flink_statements --sql-dir ../11-puzzles/cart_update deploy --group all
-  uv run python -m cc_deploy.deploy_flink_statements --sql-dir ../11-puzzles/cart_update undeploy --group all
-  uv run python -m cc_deploy.deploy_flink_statements --sql-dir ../11-puzzles/cart_update drop-tables
-  uv run python -m cc_deploy.deploy_flink_statements --sql-dir ../04-joins/cc groups
+  uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update deploy --group all
+  uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update undeploy --group all
+  uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update drop-tables
+  uv run flink-sql-deploy --sql-dir ../04-joins/cc groups
 
 Each pipeline folder supplies deploy_manifest.json listing statement groups, SQL files,
 undeploy_all order, and drop_tables for full teardown.
@@ -16,15 +16,17 @@ Environment: loads ``DOTENV_FILE`` or ``{repo_root}/.env`` (same convention as t
 from __future__ import annotations
 
 import os
-import argparse
-import sys
+from dataclasses import dataclass
 from pathlib import Path
-from tools.flink.manifest.manifest import load_manifest, DEFAULT_MANIFEST, DeployManifest
+
+import typer
 from dotenv import load_dotenv
+
+from tools.flink.manifest.manifest import DEFAULT_MANIFEST, DeployManifest, load_manifest
 
 from tools.flink.cc_deploy.flink_deploy import (
     deploy_statements,
-    drop_tables,
+    drop_tables as flink_drop_tables,
     full_undeploy,
     get_config,
     undeploy_statements,
@@ -84,56 +86,7 @@ def load_dotenv_file(*, start: Path | None = None) -> bool:
     return load_dotenv(path, override=True)
 
 
-def _parse_args() -> argparse.Namespace:
-    """Parse CLI args."""
-    parser = argparse.ArgumentParser(
-        description="Deploy Flink SQL statement groups to Confluent Cloud (confluent-sql REST API)."
-    )
-    parser.add_argument(
-        "--sql-dir",
-        type=Path,
-        required=True,
-        help="Demo folder containing SQL files and deploy_manifest.json",
-    )
-
-    sub = parser.add_subparsers(dest="action", required=True)
-
-    deploy_p = sub.add_parser("deploy", help="Create statements in manifest order")
-    deploy_p.add_argument(
-        "--group",
-        default="all",
-        help="Manifest group name, or 'all' (default: all)",
-    )
-
-    undeploy_p = sub.add_parser(
-        "undeploy",
-        help="Delete statements; with --group all also drops tables from manifest",
-    )
-    undeploy_p.add_argument(
-        "--group",
-        default="all",
-        help="Manifest group name, or 'all' for full teardown (default: all)",
-    )
-    undeploy_p.add_argument(
-        "--no-drop-tables",
-        action="store_true",
-        help="With --group all, delete statements only (skip drop_tables)",
-    )
-
-    sub.add_parser(
-        "drop-tables",
-        help="Drop tables listed in manifest drop_tables (no statement deletes)",
-    )
-
-    sub.add_parser(
-        "groups",
-        help="List manifest groups and statement counts",
-    )
-
-    return parser.parse_args()
-
-
-def print_groups(manifest) -> None:
+def print_groups(manifest: DeployManifest) -> None:
     """Print group names, sizes, and deploy_all / undeploy_all membership."""
     deploy_set = set(manifest.deploy_all)
     undeploy_set = set(manifest.undeploy_all)
@@ -147,73 +100,144 @@ def print_groups(manifest) -> None:
         flag_text = f" ({', '.join(flags)})" if flags else ""
         print(f"{name}: {count} statement(s){flag_text}")
 
-def deploy_flink_statements(manifest: DeployManifest, group: str, sql_dir: Path, config: dict[str, str]) -> None:
+
+def deploy_flink_statements(
+    manifest: DeployManifest,
+    group: str,
+    sql_dir: Path,
+    config: dict[str, str],
+    *,
+    rerun: bool = False,
+) -> None:
     """Deploy Flink SQL statements for a given group."""
     statements = manifest.statements_for(group)
     deploy_statements(
         statements,
         sql_dir=sql_dir,
-        config=config
+        config=config,
+        rerun=rerun,
     )
 
 
-def main() -> None:
-    """Load env, parse CLI args, and run deploy / undeploy / drop-tables / groups."""
+@dataclass
+class DeployContext:
+    """Shared state resolved once from ``--sql-dir`` and passed to every subcommand."""
+
+    sql_dir: Path
+    manifest: DeployManifest
+
+
+app = typer.Typer(
+    add_completion=False,
+    help="Deploy Flink SQL statement groups to Confluent Cloud (confluent-sql REST API).",
+)
+
+
+@app.callback()
+def _load_context(
+    ctx: typer.Context,
+    sql_dir: Path = typer.Option(
+        ...,
+        "--sql-dir",
+        help="Demo folder containing SQL files and deploy_manifest.json",
+    ),
+) -> None:
+    """Load env, resolve --sql-dir, and load its deploy_manifest.json."""
     load_dotenv_file()
-    args = _parse_args()
 
-    sql_dir = args.sql_dir.resolve()
-    if not sql_dir.is_dir():
-        print(f"sql-dir not found: {sql_dir}", file=sys.stderr)
-        sys.exit(1)
+    resolved = sql_dir.resolve()
+    if not resolved.is_dir():
+        typer.echo(f"sql-dir not found: {resolved}", err=True)
+        raise typer.Exit(code=1)
 
-    manifest_path = (sql_dir / DEFAULT_MANIFEST).resolve()
+    manifest_path = (resolved / DEFAULT_MANIFEST).resolve()
     if not manifest_path.is_file():
-        print(f"Manifest not found: {manifest_path}", file=sys.stderr)
-        sys.exit(1)
+        typer.echo(f"Manifest not found: {manifest_path}", err=True)
+        raise typer.Exit(code=1)
 
-    manifest = load_manifest(manifest_path)
+    ctx.obj = DeployContext(sql_dir=resolved, manifest=load_manifest(manifest_path))
 
-    if args.action == "groups":
-        print_groups(manifest)
-        return
 
+@app.command()
+def deploy(
+    ctx: typer.Context,
+    group: str = typer.Option(
+        "all",
+        "--group",
+        help="Manifest group name, or 'all' (default: all)",
+    ),
+    rerun: bool = typer.Option(
+        False,
+        "--rerun",
+        help=(
+            "Redeploy every statement in this group even if it was already "
+            "deployed unchanged (by default, unchanged statements are skipped)"
+        ),
+    ),
+) -> None:
+    """Create statements in manifest order, skipping ones already deployed unchanged."""
+    context: DeployContext = ctx.obj
     config = get_config()
-
     try:
-        if args.action == "deploy":
-            group = args.group
-            deploy_flink_statements(manifest, group, sql_dir, config)
-            
-            print(f"deploy --group {group} complete.")
-            return
+        deploy_flink_statements(context.manifest, group, context.sql_dir, config, rerun=rerun)
+    except KeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print(f"deploy --group {group} complete.")
 
-        if args.action == "drop-tables":
-            if not manifest.drop_tables:
-                print("No drop_tables defined in manifest.", file=sys.stderr)
-                sys.exit(1)
-            drop_tables(manifest.drop_tables, manifest=manifest, config=config)
-            print("drop-tables complete.")
-            return
 
-        group = args.group
+@app.command()
+def undeploy(
+    ctx: typer.Context,
+    group: str = typer.Option(
+        "all",
+        "--group",
+        help="Manifest group name, or 'all' for full teardown (default: all)",
+    ),
+    no_drop_tables: bool = typer.Option(
+        False,
+        "--no-drop-tables",
+        help="With --group all, delete statements only (skip drop_tables)",
+    ),
+) -> None:
+    """Delete statements; with --group all also drops tables from manifest."""
+    context: DeployContext = ctx.obj
+    config = get_config()
+    try:
         if group == "all":
             full_undeploy(
-                manifest,
+                context.manifest,
                 config=config,
-                drop_tables_after=not args.no_drop_tables,
+                drop_tables_after=not no_drop_tables,
+                sql_dir=context.sql_dir,
             )
         else:
-            statements = manifest.undeploy_order(group)
-            undeploy_statements(
-                statements,
-                config=config
-            )
-        print(f"undeploy --group {group} complete.")
+            statements = context.manifest.undeploy_order(group)
+            undeploy_statements(statements, config=config, sql_dir=context.sql_dir)
     except KeyError as exc:
-        print(exc, file=sys.stderr)
-        sys.exit(1)
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print(f"undeploy --group {group} complete.")
+
+
+@app.command("drop-tables")
+def drop_tables_command(ctx: typer.Context) -> None:
+    """Drop tables listed in manifest drop_tables (no statement deletes)."""
+    context: DeployContext = ctx.obj
+    if not context.manifest.drop_tables:
+        typer.echo("No drop_tables defined in manifest.", err=True)
+        raise typer.Exit(code=1)
+    config = get_config()
+    flink_drop_tables(context.manifest.drop_tables, manifest=context.manifest, config=config)
+    print("drop-tables complete.")
+
+
+@app.command()
+def groups(ctx: typer.Context) -> None:
+    """List manifest groups and statement counts."""
+    context: DeployContext = ctx.obj
+    print_groups(context.manifest)
 
 
 if __name__ == "__main__":
-    main()
+    app()

@@ -1,6 +1,9 @@
 {{ config(
     materialized='streaming_table',
-    distributed_by='tenant_id,group_id',
+    distributed_by={
+        'columns': ['tenant_id', 'group_id'],
+        'buckets': 1
+    },
     with={
         'changelog.mode': 'upsert',
         'key.format': 'avro-registry',

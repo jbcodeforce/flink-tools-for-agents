@@ -162,8 +162,13 @@ uv run python -m tools.dbt.sql_to_dbt_yaml model.sql --project-root ./my-project
 
 ### From a Confluent Schema Registry topic
 
+Fetches the topic's schema and writes it into the project — `--output sources` (default)
+upserts a table entry into `<pipelines_dir>/models/sources.yaml`; `--output model` writes a
+standalone `<pipelines_dir>/models/<schema-name>.yml`. The YAML block is also printed to stdout.
+Requires an initialized project (`sl-dbt init` first) and `SCHEMA_REGISTRY_ENDPOINT` /
+`SCHEMA_REGISTRY_API_KEY` / `SCHEMA_REGISTRY_API_SECRET` (loaded automatically from
+`~/.confluent/.env`).
+
 ```bash
-uv run python -m tools.dbt.sr_to_dbt_yaml orders_topic \
-  --output sources \
-  --sr-url https://psrc-xxx.region.aws.confluent.cloud
+uv run sl-dbt get-schema-existing-topic-to-dbt ./my-project orders_topic --output sources
 ```

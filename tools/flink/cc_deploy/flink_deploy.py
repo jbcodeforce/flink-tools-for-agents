@@ -21,6 +21,13 @@ import confluent_sql
 from confluent_sql.exceptions import OperationalError
 from confluent_sql.execution_mode import ExecutionMode
 
+from tools.flink.cc_deploy.deploy_state import (
+    forget_deployed,
+    is_already_deployed,
+    load_state,
+    mark_deployed,
+    save_state,
+)
 from tools.flink.cc_deploy.statement_lifecycle import (
     POLL_INTERVAL_SEC,
     STATEMENT_TIMEOUT_SEC,
@@ -194,22 +201,53 @@ def deploy_statements(
     statements: list[StatementRef],
     *,
     sql_dir: Path,
-    config: dict[str, str]
+    config: dict[str, str],
+    rerun: bool = False,
 ) -> None:
+    """
+    Create each statement, skipping ones already deployed unchanged.
+
+    A statement is skipped when its name was previously recorded (in
+    ``deploy_state.STATE_FILENAME`` under *sql_dir*) as successfully deployed
+    with the same SQL content to the same Confluent Cloud target, unless
+    ``rerun`` is True. The ledger is updated after each successful create so a
+    later retry after a mid-batch failure does not redeploy earlier successes.
+    """
+    state = load_state(sql_dir)
+    pending: list[tuple[StatementRef, str]] = []
+    for stmt in statements:
+        sql_content = read_sql(sql_dir, stmt.file)
+        if not rerun and is_already_deployed(state, stmt.name, sql_content, config):
+            print(f"  {stmt.name}: skipped (already deployed, unchanged)")
+            continue
+        pending.append((stmt, sql_content))
+
+    if not pending:
+        return
+
     with flink_connection(config, user_agent=DEFAULT_USER_AGENT) as conn:
-        for stmt in statements:
-            run_create(conn, config, stmt.name, read_sql(sql_dir, stmt.file))
+        for stmt, sql_content in pending:
+            run_create(conn, config, stmt.name, sql_content)
+            mark_deployed(state, stmt.name, sql_content, config)
+            save_state(sql_dir, state)
 
 
 def undeploy_statements(
     statements: list[StatementRef],
     *,
     config: dict[str, str],
-    user_agent: str = DEFAULT_USER_AGENT
+    user_agent: str = DEFAULT_USER_AGENT,
+    sql_dir: Path | None = None,
 ) -> None:
+    """Delete each statement, forgetting it from the deploy ledger for *sql_dir* (if given)."""
+    state = load_state(sql_dir) if sql_dir else {}
     with flink_connection(config, user_agent=user_agent) as conn:
         for stmt in statements:
             run_delete(conn, stmt.name)
+            if sql_dir:
+                forget_deployed(state, stmt.name)
+    if sql_dir:
+        save_state(sql_dir, state)
 
 
 def run_drop_table(
@@ -276,13 +314,14 @@ def full_undeploy(
     manifest: DeployManifest,
     *,
     config: dict[str, str],
-    drop_tables_after: bool = True
+    drop_tables_after: bool = True,
+    sql_dir: Path | None = None,
 ) -> None:
     """Stop/delete running statements, then drop tables listed in the manifest."""
     statements = manifest.statements_for_full_undeploy()
     if statements:
         print("Stopping and deleting Flink statements...")
-        undeploy_statements(statements, config=config, user_agent=manifest.user_agent)
+        undeploy_statements(statements, config=config, user_agent=manifest.user_agent, sql_dir=sql_dir)
     if drop_tables_after and manifest.drop_tables:
         drop_tables(manifest.drop_tables, manifest=manifest, config=config)
 

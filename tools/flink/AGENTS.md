@@ -2,9 +2,8 @@
 
 ## Domain Purpose
 
-Deploy and undeploy Flink SQL statement groups on Confluent Cloud, run bounded snapshot queries,
-run continuous streaming queries, and generate deployment manifests from SQL directories or dbt
-projects.
+Generate deployment manifests from SQL directories or dbt projects.
+Deploy and undeploy Flink SQL statement groups on Confluent Cloud, run bounded snapshot queries, run continuous streaming queries.
 
 ## Module Map
 
@@ -43,9 +42,19 @@ projects.
 ## Success Checks
 
 ```bash
-uv run deploy-flink-statements --help
-uv run run-snapshot-query --help
-uv run run-streaming-query --help
+uv run flink-sql-deploy --help
+uv run flink-sql-snapshot --help
+uv run flink-sql-stream --help
 uv run generate-manifest --help
-uv run pytest tools/flink/ -q
+uv run flink-sql-cleanup --help
 ```
+
+
+### Specific commands
+
+* Create the manfifest.json for the sqls in a folder
+    ```sh
+    uv run generate-manifest --sql-dir <>
+    ```
+
+* 

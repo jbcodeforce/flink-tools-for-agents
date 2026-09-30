@@ -4,12 +4,23 @@ Support the concept of star schema and data product or kimball with data product
 """
 
 import enum
+import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
 import yaml
+from confluent_kafka.schema_registry.error import SchemaRegistryError
 from pydantic import BaseModel
+
+from tools.flink.cc_deploy.deploy_flink_statements import load_dotenv_file
+from tools.dbt.schema_registry_helpers import (
+    SchemaFetcher,
+    is_debezium_envelope,
+    render_model_yaml,
+    render_sources_yaml,
+    schema_to_columns,
+)
 
 # ---------------------------------------------------------------------------
 # dbt pipeline scaffold (mirrors `dbt init -s`)
@@ -187,6 +198,11 @@ class TableType(str, enum.Enum):
         _aliases = {TableType.src: TableType.source, TableType.dim: TableType.dimension}
         return _aliases.get(self, self)
 
+
+class SchemaOutputMode(str, enum.Enum):
+    sources = "sources"
+    model = "model"
+
 def _write(path: Path, content: str, *, overwrite: bool = True) -> None:
     """Write *content* to *path*, creating parent directories as needed.
 
@@ -270,6 +286,7 @@ def load_metadata(root: Path) -> ProjectMetadata:
 
     Raises ``typer.Exit`` with an error message when the file is absent.
     """
+    print(root)
     meta_path = root / _METADATA_FILE
     if not meta_path.exists():
         typer.echo(
@@ -381,16 +398,24 @@ def add_table(
     _write(table_path / f"{name}.yml", _YML_TMPL.format(table_name=name))
     typer.echo(f"Statement/Table added as {name}.sql in {table_path.resolve()}")
 
-def _upsert_sources_yaml(sources_path: Path, profile_name: str, topic_name: str) -> None:
-    """Add *topic_name* to the sources.yaml under *sources_path*.
+def _upsert_source_table(
+    sources_path: Path,
+    profile_name: str,
+    topic_name: str,
+    columns: list[dict[str, str]],
+    *,
+    description: str | None = None,
+) -> None:
+    """Add or replace *topic_name* as a table under *profile_name* in sources.yaml.
 
-    If the file does not exist it is created from scratch.  If it already
-    contains the topic it is left untouched (idempotent).
+    If the file (or its parent directory) does not exist it is created from
+    scratch. Unlike :func:`_upsert_sources_yaml`, this always overwrites an
+    existing table entry's columns/description — used for schema-registry-
+    derived columns, which should reflect the live schema on every run.
     """
-    if sources_path.exists():
-        data = yaml.safe_load(sources_path.read_text()) or {}
-    else:
-        data = {}
+    sources_path.parent.mkdir(parents=True, exist_ok=True)
+    data = yaml.safe_load(sources_path.read_text()) if sources_path.exists() else {}
+    data = data or {}
 
     sources: list = data.get("sources") or []
 
@@ -402,24 +427,50 @@ def _upsert_sources_yaml(sources_path: Path, profile_name: str, topic_name: str)
 
     tables: list = source_block.setdefault("tables", [])
 
-    # Idempotent: skip if already registered
-    if any(t.get("name") == topic_name for t in tables):
-        return
+    entry = {"name": topic_name, "identifier": topic_name}
+    if description:
+        entry["description"] = description
+    entry["columns"] = columns
 
-    tables.append({
-        "name": topic_name,
-        "identifier": topic_name,
-        "description": f"Raw topic '{topic_name}' — auto-scaffolded by sl-dbt add-raw-topic.",
-        "columns": [
-            {"name": "id",         "data_type": "varchar"},
-            {"name": "created_at", "data_type": "timestamp(3)"},
-            {"name": "payload",    "data_type": "varchar"},
-        ],
-    })
+    existing = next((t for t in tables if t.get("name") == topic_name), None)
+    if existing is not None:
+        existing.update(entry)
+    else:
+        tables.append(entry)
 
     data["version"] = 2
     data["sources"] = sources
     sources_path.write_text(yaml.dump(data, sort_keys=False, allow_unicode=True))
+
+
+def _upsert_sources_yaml(sources_path: Path, profile_name: str, topic_name: str) -> None:
+    """Add *topic_name* to the sources.yaml under *sources_path* (raw-topic scaffold columns).
+
+    If the file does not exist it is created from scratch.  If it already
+    contains the topic it is left untouched (idempotent) — the scaffolded
+    columns are TODO placeholders meant for manual editing, so re-running
+    this must never clobber a user's edits.
+    """
+    data = yaml.safe_load(sources_path.read_text()) if sources_path.exists() else {}
+    sources: list = (data or {}).get("sources") or []
+    source_block = next((s for s in sources if s.get("name") == profile_name), None)
+    already_registered = source_block is not None and any(
+        t.get("name") == topic_name for t in source_block.get("tables", [])
+    )
+    if already_registered:
+        return
+
+    _upsert_source_table(
+        sources_path,
+        profile_name,
+        topic_name,
+        columns=[
+            {"name": "id",         "data_type": "varchar"},
+            {"name": "created_at", "data_type": "timestamp(3)"},
+            {"name": "payload",    "data_type": "varchar"},
+        ],
+        description=f"Raw topic '{topic_name}' — auto-scaffolded by sl-dbt add-raw-topic.",
+    )
 
 
 @app.command()
@@ -465,6 +516,169 @@ def add_raw_topic(
     typer.echo(f"  ddl.{topic_name}.sql  — edit columns to match your topic schema")
     typer.echo(f"  dml.{topic_name}.sql  — edit synthetic rows for local testing")
     typer.echo(f"  sources.yaml updated  — topic registered as source '{profile_name}'")
+
+
+# ---------------------------------------------------------------------------
+# Schema Registry → dbt YAML
+# ---------------------------------------------------------------------------
+
+def _env_first(*names: str) -> str:
+    """Return the value of the first set (non-empty) env var, or ''."""
+    for name in names:
+        value = os.environ.get(name, "")
+        if value:
+            return value
+    return ""
+
+
+@app.command()
+def get_schema_existing_topic_to_dbt(
+    project_root: Annotated[Path, typer.Argument(help="Existing project root folder path")],
+    topic_name: Annotated[str, typer.Argument(help="Kafka topic name (e.g. raw_hosts).")],
+    subject_suffix: Annotated[
+        str,
+        typer.Option(
+            "--subject-suffix",
+            help=(
+                "Comma-separated subject suffixes to fetch: 'key', 'value', or "
+                "'key,value' (default: value)."
+            ),
+        ),
+    ] = "value",
+    output: Annotated[
+        SchemaOutputMode,
+        typer.Option(
+            "--output",
+            help=(
+                "'sources' emits a sources: block (contract.enforced: true); "
+                "'model' emits a models: block (contract.enforced: false)."
+            ),
+        ),
+    ] = SchemaOutputMode.sources,
+    schema_name: Annotated[
+        str,
+        typer.Option(
+            "--schema-name",
+            help=(
+                "Override the name used in the YAML output. "
+                "For --output sources this sets schema: and source name (default: topic). "
+                "For --output model this sets the model name (default: topic)."
+            ),
+        ),
+    ] = "",
+) -> None:
+    """Fetch Confluent Schema Registry subjects for a Kafka topic and write dbt YAML.
+
+    Reads the key and/or value schema registered under ``{topic}-key`` /
+    ``{topic}-value`` and writes it into the project:
+
+    \b
+      --output sources (default): upserts a table entry for the topic into
+        <project_root>/<pipelines_dir>/models/sources.yaml, under the
+        project's dbt profile (same file/shape as `add-raw-topic`).
+      --output model: writes a standalone
+        <project_root>/<pipelines_dir>/models/<schema-name>.yml (overwritten
+        on every run, so it always reflects the current schema).
+
+    The YAML block is also printed to stdout.
+
+    If the fetched schema is a Debezium CDC envelope (has before/after/op
+    fields), columns are built from the `after` record — the actual current
+    row shape — instead of the envelope's own fields. Nested structs inside
+    it become hierarchical `row<...>` types rather than collapsing to a
+    plain string.
+
+    Schema Registry credentials are resolved in priority order:
+
+    \b
+      1. ~/.confluent/.env / repo-root .env (loaded automatically)
+      2. Environment variables (SCHEMA_REGISTRY_ENDPOINT, SCHEMA_REGISTRY_API_KEY,
+         SCHEMA_REGISTRY_API_SECRET)
+
+    \b
+    Examples
+    --------
+      sl-dbt get-schema-existing-topic-to-dbt ./my_project raw_hosts
+      sl-dbt get-schema-existing-topic-to-dbt ./my_project raw_hosts --subject-suffix key,value
+      sl-dbt get-schema-existing-topic-to-dbt ./my_project raw_hosts --output model --schema-name src_hosts
+    """
+    load_dotenv_file()
+    meta = load_metadata(project_root)
+
+    resolved_sr_url = _env_first("SCHEMA_REGISTRY_ENDPOINT", "SCHEMA_REGISTRY_URL")
+    resolved_sr_key = _env_first("SCHEMA_REGISTRY_API_KEY", "SCHEMA_REGISTRY_USER")
+    resolved_sr_secret = _env_first("SCHEMA_REGISTRY_API_SECRET", "SCHEMA_REGISTRY_PASSWORD")
+
+    if not resolved_sr_url:
+        typer.echo(
+            "Error: Schema Registry URL is required. Set SCHEMA_REGISTRY_ENDPOINT.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    suffixes = [s.strip() for s in subject_suffix.split(",") if s.strip()]
+    invalid = [s for s in suffixes if s not in ("key", "value")]
+    if invalid:
+        typer.echo(
+            f"Error: invalid --subject-suffix value(s): {invalid}. "
+            "Use 'key', 'value', or 'key,value'.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    resolved_schema_name = schema_name or topic_name
+
+    try:
+        fetcher = SchemaFetcher(url=resolved_sr_url, key=resolved_sr_key, secret=resolved_sr_secret)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    models_dir = project_root / meta.pipelines_dir / "models"
+    output_blocks: list[str] = []
+    written_path: Path | None = None
+
+    for suffix in suffixes:
+        subject = f"{topic_name}-{suffix}"
+        try:
+            schema, schema_type = fetcher.fetch(subject)
+        except SchemaRegistryError as exc:
+            typer.echo(f"Error fetching subject '{subject}': {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        if is_debezium_envelope(schema, schema_type):
+            typer.echo(
+                f"  {subject}: detected Debezium CDC envelope — using 'after' schema for columns.",
+                err=True,
+            )
+
+        try:
+            columns = schema_to_columns(schema, schema_type)
+        except (NotImplementedError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        if len(suffixes) > 1:
+            output_blocks.append(f"# --- subject: {subject} ---")
+
+        if output == SchemaOutputMode.sources:
+            output_blocks.append(render_sources_yaml(topic_name, resolved_schema_name, columns))
+            written_path = models_dir / "sources.yaml"
+            _upsert_source_table(
+                written_path,
+                meta.dbt_profile_name,
+                topic_name,
+                columns=[{"name": c.name, "data_type": c.data_type} for c in columns],
+                description=f"Topic '{topic_name}' — registered via sl-dbt get-schema-existing-topic-to-dbt.",
+            )
+        else:
+            output_blocks.append(render_model_yaml(resolved_schema_name, columns))
+            written_path = models_dir / f"{resolved_schema_name}.yml"
+            _write(written_path, output_blocks[-1])
+
+    print("\n".join(output_blocks), end="")
+    if written_path is not None:
+        typer.echo(f"\nWrote {written_path.resolve()}", err=True)
 
 
 if __name__ == "__main__":

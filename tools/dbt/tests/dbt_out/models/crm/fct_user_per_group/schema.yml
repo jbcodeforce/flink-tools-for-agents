@@ -5,8 +5,16 @@ models:
   columns:
   - name: tenant_id
     data_type: VARCHAR
+    constraints:
+    - type: not_null
+    - type: primary_key
+      expression: not enforced
   - name: group_id
     data_type: VARCHAR
+    constraints:
+    - type: not_null
+    - type: primary_key
+      expression: not enforced
   - name: group_name
     data_type: VARCHAR
   - name: total_users

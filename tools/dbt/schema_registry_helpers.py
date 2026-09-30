@@ -10,7 +10,17 @@ Three independent layers (each importable on its own):
 2. ``schema_to_columns`` — pure function: schema dict → list[ColumnSpec]
 3. ``render_sources_yaml`` / ``render_model_yaml`` — pure YAML renderers
 
-Environment variables (same names as kafka_json_producer):
+``schema_to_columns`` auto-detects a Debezium CDC envelope (a schema with
+``before``/``after``/``op`` fields) and builds columns from the ``after``
+record instead of the envelope itself, since ``after`` — not the envelope —
+is the real table's row shape. Nested records/arrays inside it are resolved
+recursively into Flink ``row<...>``/``array<...>`` type strings rather than
+collapsing to a plain string, so a nested struct still produces a usable,
+hierarchical column type. Use :func:`is_debezium_envelope` to detect this
+case separately (e.g. to log a note about which schema was actually used).
+
+Environment variables (same names used by ``tools.kafka.register_schema``, plus the
+legacy aliases this module originally shipped with):
 
 - ``SCHEMA_REGISTRY_ENDPOINT`` / ``SCHEMA_REGISTRY_URL`` — registry URL
 - ``SCHEMA_REGISTRY_API_KEY`` / ``SCHEMA_REGISTRY_USER`` — basic-auth key
@@ -18,7 +28,7 @@ Environment variables (same names as kafka_json_producer):
 
 Usage::
 
-    from cm_py_lib.schema_registry import SchemaFetcher, schema_to_columns, render_sources_yaml
+    from tools.dbt.schema_registry_helpers import SchemaFetcher, schema_to_columns, render_sources_yaml
 
     fetcher = SchemaFetcher()                                    # reads env vars
     schema, schema_type = fetcher.fetch("raw_hosts-value")
@@ -29,6 +39,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,14 +47,14 @@ import yaml
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.error import SchemaRegistryError
 
-# Re-use the env-var constants already resolved by kafka_json_producer so
-# credentials only need to be set in one place (same pattern as
-# kafka_avro_producer.py).
-from cm_py_lib.kafka_json_producer import (
-    SCHEMA_REGISTRY_PASSWORD,
-    SCHEMA_REGISTRY_URL,
-    SCHEMA_REGISTRY_USER,
-)
+
+def _env_first(*names: str) -> str:
+    """Return the value of the first set (non-empty) env var, or ''."""
+    for name in names:
+        value = os.environ.get(name, "")
+        if value:
+            return value
+    return ""
 
 
 # ── Schema Registry access ────────────────────────────────────────────────────
@@ -53,7 +64,13 @@ class SchemaFetcher:
 
     Credentials are resolved in priority order:
       1. Constructor arguments (``url``, ``key``, ``secret``)
-      2. Environment variables (via kafka_json_producer module-level constants)
+      2. Environment variables, read at construction time (not import time) so
+         a ``.env`` file loaded just before constructing this object is picked
+         up: ``SCHEMA_REGISTRY_ENDPOINT``/``SCHEMA_REGISTRY_API_KEY``/
+         ``SCHEMA_REGISTRY_API_SECRET`` (same names as
+         ``tools.kafka.register_schema``), falling back to this module's
+         legacy ``SCHEMA_REGISTRY_URL``/``SCHEMA_REGISTRY_USER``/
+         ``SCHEMA_REGISTRY_PASSWORD`` aliases.
 
     Args:
         url:    Schema Registry base URL.  Overrides ``SCHEMA_REGISTRY_ENDPOINT``.
@@ -67,9 +84,9 @@ class SchemaFetcher:
         key: str | None = None,
         secret: str | None = None,
     ) -> None:
-        effective_url = url or SCHEMA_REGISTRY_URL
-        effective_key = key or SCHEMA_REGISTRY_USER
-        effective_secret = secret or SCHEMA_REGISTRY_PASSWORD
+        effective_url = url or _env_first("SCHEMA_REGISTRY_ENDPOINT", "SCHEMA_REGISTRY_URL")
+        effective_key = key or _env_first("SCHEMA_REGISTRY_API_KEY", "SCHEMA_REGISTRY_USER")
+        effective_secret = secret or _env_first("SCHEMA_REGISTRY_API_SECRET", "SCHEMA_REGISTRY_PASSWORD")
 
         if not effective_url:
             raise ValueError(
@@ -147,6 +164,18 @@ _AVRO_LOGICAL_TO_DBT: dict[str, str] = {
     "uuid": "string",
 }
 
+# Avro primitive type names — anything else appearing as a bare string type is
+# a reference to an already-defined named type (record/enum/fixed), Avro's
+# shorthand for reusing a type instead of repeating its full definition.
+_AVRO_PRIMITIVE_TYPES = frozenset(
+    {"null", "boolean", "int", "long", "float", "double", "bytes", "string"}
+)
+
+# Debezium CDC envelope marker fields. Requiring all three (rather than just
+# before/after) avoids misfiring on a table that coincidentally has columns
+# named "before"/"after" but isn't actually a CDC envelope.
+_DEBEZIUM_ENVELOPE_FIELDS = frozenset({"before", "after", "op"})
+
 
 # ── Schema → ColumnSpec ───────────────────────────────────────────────────────
 
@@ -159,6 +188,11 @@ class ColumnSpec:
 
 def schema_to_columns(schema: dict[str, Any], schema_type: str) -> list[ColumnSpec]:
     """Convert a parsed schema dict to a list of :class:`ColumnSpec`.
+
+    If *schema* is a Debezium CDC envelope (see :func:`is_debezium_envelope`),
+    columns are built from the ``after`` record — the actual current row
+    shape — instead of the envelope's own fields (``before``, ``after``,
+    ``source``, ``op``, ``ts_ms``, ...).
 
     Args:
         schema:      Parsed schema dict as returned by :meth:`SchemaFetcher.fetch`.
@@ -183,14 +217,44 @@ def schema_to_columns(schema: dict[str, Any], schema_type: str) -> list[ColumnSp
     raise ValueError(f"Unknown schema_type '{schema_type}'. Expected JSON or AVRO.")
 
 
-def _json_type(prop: dict[str, Any]) -> str:
-    """Map a single JSON Schema property definition to a dbt type string."""
-    # Unwrap Pydantic-style Optional: anyOf/oneOf containing a null branch.
+def is_debezium_envelope(schema: dict[str, Any], schema_type: str) -> bool:
+    """True if *schema* looks like a Debezium CDC envelope (before/after/op fields)."""
+    if schema_type == "AVRO":
+        return _debezium_after_field(schema) is not None
+    if schema_type == "JSON":
+        return _debezium_after_property(schema) is not None
+    return False
+
+
+# ── JSON Schema → columns (with Debezium CDC + nested-object support) ────────
+
+def _debezium_after_property(schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the raw ``after`` property dict if *schema* is a Debezium envelope."""
+    props = schema.get("properties")
+    if not isinstance(props, dict) or not _DEBEZIUM_ENVELOPE_FIELDS <= props.keys():
+        return None
+    return props.get("after")
+
+
+def _unwrap_json_nullable(prop: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap a nullable anyOf/oneOf JSON Schema property to its non-null branch."""
     for key in ("anyOf", "oneOf"):
         if key in prop:
             non_null = [b for b in prop[key] if b.get("type") != "null" and b != {"type": "null"}]
             if non_null:
-                return _json_type(non_null[0])
+                return non_null[0]
+    return prop
+
+
+def _json_type(prop: dict[str, Any]) -> str:
+    """Map a single JSON Schema property definition to a dbt/Flink type string.
+
+    Nested ``object``/``array`` properties are resolved recursively into
+    ``row<...>``/``array<...>`` type strings, so a nested struct (e.g. inside
+    a Debezium ``after`` record) produces a hierarchical column type instead
+    of collapsing to a plain string.
+    """
+    prop = _unwrap_json_nullable(prop)
 
     raw_type: str = prop.get("type", "string")
     if isinstance(raw_type, list):
@@ -198,46 +262,155 @@ def _json_type(prop: dict[str, Any]) -> str:
         non_null = [t for t in raw_type if t != "null"]
         raw_type = non_null[0] if non_null else "null"
 
+    if raw_type == "object" and isinstance(prop.get("properties"), dict):
+        nested = ", ".join(f"{name} {_json_type(sub)}" for name, sub in prop["properties"].items())
+        return f"row<{nested}>" if nested else "row<string>"
+
+    if raw_type == "array":
+        items = prop.get("items")
+        if isinstance(items, dict):
+            return f"array<{_json_type(items)}>"
+        return "array<string>"
+
     fmt: str | None = prop.get("format")
     lookup = f"{raw_type}:{fmt}" if fmt else raw_type
     return _JSON_TO_DBT.get(lookup) or _JSON_TO_DBT.get(raw_type, "string")
 
 
 def _json_to_columns(schema: dict[str, Any]) -> list[ColumnSpec]:
+    after_prop = _debezium_after_property(schema)
+    if after_prop is not None:
+        after_props = _unwrap_json_nullable(after_prop).get("properties")
+        if isinstance(after_props, dict):
+            return [ColumnSpec(name=name, data_type=_json_type(prop)) for name, prop in after_props.items()]
+
     props: dict[str, Any] = schema.get("properties", {})
     return [ColumnSpec(name=name, data_type=_json_type(prop)) for name, prop in props.items()]
 
 
-def _avro_type(field: dict[str, Any]) -> str:
-    """Map a single Avro field definition to a dbt type string."""
-    field_type = field.get("type")
+# ── Avro → columns (with Debezium CDC + named-type resolution) ───────────────
 
-    # Unwrap nullable union: ["null", "string"] or ["null", {...}]
-    if isinstance(field_type, list):
-        non_null = [t for t in field_type if t != "null"]
-        field_type = non_null[0] if non_null else "null"
+def _collect_avro_named_types(node: Any, registry: dict[str, dict[str, Any]]) -> None:
+    """Recursively register every named Avro record in *node* by simple and
+    fully-qualified (namespace.name) name.
 
-    # Named record / complex type given as a dict
-    if isinstance(field_type, dict):
-        logical = field_type.get("logicalType")
+    Avro lets a schema reference an already-defined named record by a bare
+    string instead of repeating its full definition — exactly what Debezium
+    does for ``after`` when ``before`` already defines the shared row record
+    (conventionally named ``Value``). This registry lets :func:`_resolve_avro_type`
+    look such references back up to their full definition.
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "record" and "name" in node:
+            simple_name = node["name"]
+            registry[simple_name] = node
+            namespace = node.get("namespace")
+            if namespace:
+                registry[f"{namespace}.{simple_name}"] = node
+        for value in node.values():
+            _collect_avro_named_types(value, registry)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_avro_named_types(item, registry)
+
+
+def _resolve_avro_type(avro_type: Any, registry: dict[str, dict[str, Any]]) -> Any:
+    """Resolve a possibly-named-type-reference Avro type to its full definition."""
+    if isinstance(avro_type, str) and avro_type not in _AVRO_PRIMITIVE_TYPES:
+        return registry.get(avro_type, avro_type)
+    return avro_type
+
+
+def _unwrap_avro_nullable(avro_type: Any) -> Any:
+    """Unwrap a nullable union (``["null", X]``) to ``X``."""
+    if isinstance(avro_type, list):
+        non_null = [t for t in avro_type if t != "null"]
+        return non_null[0] if non_null else "null"
+    return avro_type
+
+
+def _debezium_after_field(schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the raw ``after`` field dict if *schema* is a Debezium envelope."""
+    fields = schema.get("fields")
+    if not isinstance(fields, list):
+        return None
+    field_names = {f.get("name") for f in fields if isinstance(f, dict)}
+    if not _DEBEZIUM_ENVELOPE_FIELDS <= field_names:
+        return None
+    return next((f for f in fields if isinstance(f, dict) and f.get("name") == "after"), None)
+
+
+def _avro_type_to_dbt(avro_type: Any, registry: dict[str, dict[str, Any]]) -> str:
+    """Map an already-resolved (nullable-unwrapped, named-ref-resolved) Avro type
+    to a dbt/Flink type string, recursing into records/arrays/maps."""
+    if isinstance(avro_type, dict):
+        logical = avro_type.get("logicalType")
         if logical and logical in _AVRO_LOGICAL_TO_DBT:
             return _AVRO_LOGICAL_TO_DBT[logical]
-        avro_base = field_type.get("type", "string")
-        return _AVRO_TO_DBT.get(avro_base, "string")
 
-    # Primitive string type name
-    if isinstance(field_type, str):
-        logical = field.get("logicalType")
-        if logical and logical in _AVRO_LOGICAL_TO_DBT:
-            return _AVRO_LOGICAL_TO_DBT[logical]
-        return _AVRO_TO_DBT.get(field_type, "string")
+        base = avro_type.get("type", "string")
+        if base == "record":
+            nested = ", ".join(
+                f"{f['name']} {_avro_type(f, registry)}" for f in avro_type.get("fields", [])
+            )
+            return f"row<{nested}>" if nested else "row<string>"
+        if base == "array":
+            item_type = _resolve_avro_type(_unwrap_avro_nullable(avro_type.get("items")), registry)
+            return f"array<{_avro_type_to_dbt(item_type, registry)}>"
+        if base == "map":
+            value_type = _resolve_avro_type(_unwrap_avro_nullable(avro_type.get("values")), registry)
+            return f"map<string,{_avro_type_to_dbt(value_type, registry)}>"
+        if base == "enum":
+            return "string"
+        return _AVRO_TO_DBT.get(base, "string")
+
+    if isinstance(avro_type, str):
+        return _AVRO_TO_DBT.get(avro_type, "string")
 
     return "string"
 
 
+def _avro_type(field: dict[str, Any], registry: dict[str, dict[str, Any]]) -> str:
+    """Map a single Avro field definition to a dbt/Flink type string.
+
+    Resolves named-type references (e.g. Debezium's before/after row-record
+    reuse) via *registry* and recurses into nested records/arrays/maps to
+    build hierarchical ``row<...>``/``array<...>`` types instead of collapsing
+    complex fields to a plain string.
+    """
+    resolved = _resolve_avro_type(_unwrap_avro_nullable(field.get("type")), registry)
+
+    # A field-level logicalType (sibling of "type" rather than nested inside
+    # it) is a non-standard shape this module has historically supported —
+    # keep honoring it when the resolved type is a bare primitive string.
+    if isinstance(resolved, str):
+        logical = field.get("logicalType")
+        if logical and logical in _AVRO_LOGICAL_TO_DBT:
+            return _AVRO_LOGICAL_TO_DBT[logical]
+
+    return _avro_type_to_dbt(resolved, registry)
+
+
+def _avro_record_fields_to_columns(
+    fields: list[dict[str, Any]], registry: dict[str, dict[str, Any]]
+) -> list[ColumnSpec]:
+    return [ColumnSpec(name=f["name"], data_type=_avro_type(f, registry)) for f in fields]
+
+
 def _avro_to_columns(schema: dict[str, Any]) -> list[ColumnSpec]:
+    registry: dict[str, dict[str, Any]] = {}
+    _collect_avro_named_types(schema, registry)
+
+    after_field = _debezium_after_field(schema)
+    if after_field is not None:
+        after_type = _resolve_avro_type(_unwrap_avro_nullable(after_field.get("type")), registry)
+        if isinstance(after_type, dict) and after_type.get("type") == "record":
+            return _avro_record_fields_to_columns(after_type.get("fields", []), registry)
+        # 'after' present but didn't resolve to a record (unexpected shape) —
+        # fall through and convert the raw envelope so callers still get something.
+
     fields: list[dict[str, Any]] = schema.get("fields", [])
-    return [ColumnSpec(name=f["name"], data_type=_avro_type(f)) for f in fields]
+    return _avro_record_fields_to_columns(fields, registry)
 
 
 # ── YAML renderers ────────────────────────────────────────────────────────────

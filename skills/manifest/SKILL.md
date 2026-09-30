@@ -6,7 +6,7 @@ description: Use when the user wants to generate a deploy_manifest.json for Flin
 # Manifest Generation Skill
 
 This skill guides you through generating a `deploy_manifest.json` using the
-`flink-sql-manifest` CLI tool from **flink-tools-for-agents**.
+`generate-manifest` CLI tool from **flink-tools-for-agents**.
 
 A manifest describes which Flink SQL statements exist, how they are grouped (e.g. `ddl`,
 `sources`, `facts`), and in what order they should be deployed and undeployed.
@@ -35,23 +35,16 @@ The project must have a compiled `manifest.json` in `target/` (run `dbt compile`
 
 ```bash
 # From a Flink SQL directory (dry-run first)
-uv run flink-sql-manifest --sql-dir ./my-pipeline --dry-run
+uv run generate-manifest --sql-dir ./my-pipeline --dry-run
 
 # Write deploy_manifest.json
-uv run flink-sql-manifest --sql-dir ./my-pipeline
+uv run generate-manifest --sql-dir ./my-pipeline
 
 # Overwrite an existing manifest
-uv run flink-sql-manifest --sql-dir ./my-pipeline --overwrite
+uv run generate-manifest --sql-dir ./my-pipeline --overwrite
 
 # With a custom statement-name prefix
-uv run flink-sql-manifest --sql-dir ./my-pipeline --prefix my-demo
-```
-
-```bash
-# From a dbt-confluent project (compile first)
-cd ./my-dbt-project && dbt compile
-uv run flink-sql-manifest --sql-dir ./my-dbt-project --dbt --dry-run
-uv run flink-sql-manifest --sql-dir ./my-dbt-project --dbt --overwrite
+uv run generate-manifest --sql-dir ./my-pipeline --prefix my-demo
 ```
 
 ## Step 3 — Inspect the manifest
@@ -94,7 +87,7 @@ uv run flink-sql-deploy --sql-dir ./my-pipeline deploy --group pipeline
 ### Re-generate after SQL changes
 
 ```bash
-uv run flink-sql-manifest --sql-dir ./my-pipeline --overwrite
+uv run generate-manifest --sql-dir ./my-pipeline --overwrite
 uv run flink-sql-deploy --sql-dir ./my-pipeline groups
 ```
 
@@ -104,7 +97,7 @@ uv run flink-sql-deploy --sql-dir ./my-pipeline groups
 cd ./my-dbt-project
 dbt compile --target prod
 cd ..
-uv run flink-sql-manifest --sql-dir ./my-dbt-project --dbt --overwrite
+uv run generate-manifest --sql-dir ./my-dbt-project --dbt --overwrite
 ```
 
 ## Troubleshooting

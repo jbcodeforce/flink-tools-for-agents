@@ -11,7 +11,7 @@ import re
 import yaml
 
 from tools.dbt.flink_dbt_migrate.discover_deps import UpstreamDep
-from tools.dbt.flink_dbt_migrate.flink_sql_processor import DdlTable, DmlStatement, collect_cte_names
+from tools.dbt.flink_dbt_migrate.flink_sql_processor import DdlTable, DmlStatement, collect_cte_names, strip_identifier
 from tools.dbt.flink_dbt_migrate.rewrite_refs import rewrite_refs
 from tools.dbt.flink_dbt_migrate.type_map import flink_type_to_dbt
 
@@ -76,7 +76,14 @@ def format_config_block(
     config_items: list[str] = [f"    materialized='{materialized}'"]
 
     if ddl.distributed_by:
-        config_items.append(f"    distributed_by='{ddl.distributed_by}'")
+        dist_keys = parse_distributed_by_keys(ddl.distributed_by)
+        cols_repr = "[" + ", ".join(f"'{c}'" for c in dist_keys) + "]"
+        dist_lines = ["    distributed_by={"]
+        dist_lines.append(f"        'columns': {cols_repr},")
+        if ddl.distributed_by_buckets is not None:
+            dist_lines.append(f"        'buckets': {ddl.distributed_by_buckets}")
+        dist_lines.append("    }")
+        config_items.append("\n".join(dist_lines))
 
     if ddl.with_options:
         with_lines = ["    with={"]
@@ -147,6 +154,25 @@ def emit_model_sql(
 # ---------------------------------------------------------------------------
 
 
+def parse_distributed_by_keys(distributed_by: str | None) -> list[str]:
+    """Extract individual column names from a distributed_by string."""
+    if not distributed_by:
+        return []
+    return [
+        strip_identifier(part.strip())
+        for part in distributed_by.split(",")
+        if strip_identifier(part.strip())
+    ]
+
+
+def default_key_constraints() -> list[dict[str, str]]:
+    """Return the standard constraints block for primary key columns."""
+    return [
+        {"type": "not_null"},
+        {"type": "primary_key", "expression": "not enforced"},
+    ]
+
+
 def build_model_schema_entry(
     model_name: str,
     ddl: DdlTable,
@@ -158,16 +184,21 @@ def build_model_schema_entry(
         if source_filename
         else f"Migrated Flink model for {ddl.table_name}"
     )
+    dist_keys = set(parse_distributed_by_keys(ddl.distributed_by))
+    columns = []
+    for column in ddl.columns:
+        col_dict: dict = {
+            "name": column.name,
+            "data_type": flink_type_to_dbt(column.flink_type),
+        }
+        if column.name in dist_keys:
+            col_dict["constraints"] = default_key_constraints()
+        columns.append(col_dict)
+
     return {
         "name": model_name,
         "description": description,
-        "columns": [
-            {
-                "name": column.name,
-                "data_type": flink_type_to_dbt(column.flink_type),
-            }
-            for column in ddl.columns
-        ],
+        "columns": columns,
     }
 
 
@@ -210,8 +241,12 @@ def merge_model_schema(
         for column in model_entry["columns"]:
             if column["name"] not in existing_columns:
                 existing["columns"].append(column)
-            elif "data_type" not in existing_columns[column["name"]]:
-                existing_columns[column["name"]]["data_type"] = column["data_type"]
+            else:
+                existing_col = existing_columns[column["name"]]
+                if "data_type" not in existing_col:
+                    existing_col["data_type"] = column["data_type"]
+                if "constraints" in column and "constraints" not in existing_col:
+                    existing_col["constraints"] = column["constraints"]
 
     data["models"] = sorted(data["models"], key=lambda entry: entry["name"])
     return data

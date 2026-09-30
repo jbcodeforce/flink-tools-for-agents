@@ -72,6 +72,7 @@ def _make_ddl(
     table_name: str = "orders",
     columns: list[tuple[str, str]] | None = None,
     distributed_by: str | None = "order_id",
+    distributed_by_buckets: int | None = 4,
     with_options: dict[str, str] | None = None,
 ) -> DdlTable:
     cols = columns or [("order_id", "STRING"), ("amount", "DECIMAL(10, 2)")]
@@ -79,6 +80,7 @@ def _make_ddl(
         table_name=table_name,
         columns=[DdlColumn(name=n, flink_type=t) for n, t in cols],
         distributed_by=distributed_by,
+        distributed_by_buckets=distributed_by_buckets,
         with_options=with_options or {},
     )
 
@@ -119,10 +121,12 @@ def test_format_config_block_custom_materialized() -> None:
 
 
 def test_format_config_block_includes_distributed_by() -> None:
-    ddl = _make_ddl(distributed_by="order_id")
+    ddl = _make_ddl(distributed_by="order_id", distributed_by_buckets=4)
     result = format_config_block(ddl)
 
-    assert "distributed_by='order_id'" in result
+    assert "distributed_by={" in result
+    assert "'columns': ['order_id']" in result
+    assert "'buckets': 4" in result
 
 
 def test_format_config_block_includes_with_options() -> None:
@@ -961,3 +965,49 @@ INNER JOIN customers c ON o.customer_id = c.id
     assert "{{ ref('to') }}" not in result
     assert "FROM {{ ref('orders') }} o" in result
     assert "INNER JOIN {{ ref('customers') }} c" in result
+
+
+def test_build_model_schema_entry_adds_constraints_for_distributed_by() -> None:
+    ddl = _make_ddl(
+        columns=[("id", "STRING"), ("tenant_id", "VARCHAR"), ("val", "INT")],
+        distributed_by="`id`, tenant_id",
+    )
+    entry = build_model_schema_entry("orders", ddl)
+
+    col_map = {c["name"]: c for c in entry["columns"]}
+    assert "constraints" in col_map["id"]
+    assert col_map["id"]["constraints"] == [
+        {"type": "not_null"},
+        {"type": "primary_key", "expression": "not enforced"},
+    ]
+    assert "constraints" in col_map["tenant_id"]
+    assert col_map["tenant_id"]["constraints"] == [
+        {"type": "not_null"},
+        {"type": "primary_key", "expression": "not enforced"},
+    ]
+    assert "constraints" not in col_map["val"]
+
+
+def test_merge_model_schema_merges_constraints_if_missing() -> None:
+    existing = {
+        "version": 2,
+        "models": [
+            {
+                "name": "orders",
+                "columns": [{"name": "id", "data_type": "VARCHAR"}],
+            }
+        ],
+    }
+    ddl = _make_ddl(
+        columns=[("id", "STRING")],
+        distributed_by="id",
+    )
+    entry = build_model_schema_entry("orders", ddl)
+    result = merge_model_schema(existing, entry)
+
+    col = result["models"][0]["columns"][0]
+    assert "constraints" in col
+    assert col["constraints"] == [
+        {"type": "not_null"},
+        {"type": "primary_key", "expression": "not enforced"},
+    ]

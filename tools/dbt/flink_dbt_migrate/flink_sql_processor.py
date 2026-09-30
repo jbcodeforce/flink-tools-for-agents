@@ -63,6 +63,7 @@ class DdlTable:
     table_name: str
     columns: list[DdlColumn] = field(default_factory=list)
     distributed_by: str | None = None
+    distributed_by_buckets: int | None = None
     with_options: dict[str, str] = field(default_factory=dict)
     primary_key: list[str] = field(default_factory=list)
 
@@ -367,18 +368,24 @@ def parse_ddl(sql: str) -> DdlTable:
             columns.append(column)
 
     distributed_match = re.search(
-        r"DISTRIBUTED\s+BY\s+HASH\s*\(([^)]+)\)",
+        r"DISTRIBUTED\s+BY\s+HASH\s*\(([^)]+)\)(?:\s+INTO\s+(\d+)\s+BUCKETS)?",
         sql,
         re.IGNORECASE,
     )
     distributed_by = (
         distributed_match.group(1).strip() if distributed_match else None
     )
+    distributed_by_buckets = (
+        int(distributed_match.group(2))
+        if distributed_match and distributed_match.group(2)
+        else None
+    )
 
     return DdlTable(
         table_name=table_name,
         columns=columns,
         distributed_by=distributed_by,
+        distributed_by_buckets=distributed_by_buckets,
         with_options=_parse_with_options(sql),
         primary_key=_parse_primary_key(columns_body),
     )
