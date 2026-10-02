@@ -6,7 +6,7 @@ Generate `deploy_manifest.json` files that describe how Flink SQL statements sho
 
 | Command | Description |
 |---------|-------------|
-| `flink-sql-manifest` | Generate a deploy manifest from a SQL dir or dbt project |
+| `generate-manifest` | Generate a deploy manifest from a SQL dir or dbt project |
 
 ## Usage
 
@@ -14,20 +14,20 @@ Generate `deploy_manifest.json` files that describe how Flink SQL statements sho
 
 ```bash
 # Dry-run (print manifest without writing)
-flink-sql-manifest --sql-dir ./my-pipeline --dry-run
+uv run generate-manifest --sql-dir ./my-pipeline --dry-run
 
 # Write deploy_manifest.json
-flink-sql-manifest --sql-dir ./my-pipeline
+uv run enerate-manifest --sql-dir ./my-pipeline
 
 # Overwrite an existing manifest
-flink-sql-manifest --sql-dir ./my-pipeline --overwrite
+uv run generate-manifest --sql-dir ./my-pipeline --overwrite
 ```
 
 ### From a dbt-confluent project
 
 ```bash
-flink-sql-manifest --sql-dir ./my-dbt-project --dbt --dry-run
-flink-sql-manifest --sql-dir ./my-dbt-project --dbt --overwrite
+uv run generate-manifest --sql-dir ./my-dbt-project --dbt --dry-run
+uv run generate-manifest --sql-dir ./my-dbt-project --dbt --overwrite
 ```
 
 ## Manifest Structure

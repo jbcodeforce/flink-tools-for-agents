@@ -57,4 +57,6 @@ uv run flink-sql-cleanup --help
     uv run generate-manifest --sql-dir <>
     ```
 
-* 
+* Deploy a group from the manifest.json
+    ```sh
+    ```

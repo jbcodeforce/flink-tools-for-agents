@@ -179,12 +179,12 @@ def _extract_table_name_from_ddl(path: Path) -> DropTableRef | None:
     sql = path.read_text(encoding="utf-8")
     mt_match = _CREATE_MATERIALIZED_TABLE_RE.search(sql)
     if mt_match:
-        name = mt_match.group(1).strip("`\"").split(".")[-1]
+        name = mt_match.group(1).strip("`\"")
         return DropTableRef(table=name, materialized=True)
     match = _CREATE_TABLE_RE.search(sql)
     if not match:
         return None
-    name = match.group(1).strip("`\"").split(".")[-1]
+    name = match.group(1).strip("`\"")
     return DropTableRef(table=name, materialized=False)
 
 

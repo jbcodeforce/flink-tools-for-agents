@@ -34,7 +34,7 @@ Every deploy operation requires a `deploy_manifest.json`. If one doesn't exist y
 manifest skill first to generate it, or use:
 
 ```bash
-uv run flink-sql-manifest --sql-dir <path-to-sql-dir>
+uv run generate-manifest --sql-dir <path-to-sql-dir>
 ```
 
 To view available groups in a manifest:
