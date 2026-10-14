@@ -1,0 +1,6 @@
+user_id,name,email,signup_date,active,score
+1,Alice,alice@example.com,2023-01-15,true,95.5
+2,Bob,bob@example.com,2023-02-20,false,87.0
+3,Charlie,charlie@example.com,2023-03-05,true,92.7
+4,Diana,diana@example.com,2023-04-12,true,88.3
+5,Eve,eve@example.com,2023-05-18,false,76.1

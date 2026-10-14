@@ -12,8 +12,9 @@ on before deploying pipelines.
 |---|---|---|
 | `register_schema.py` | CLI | `register`, `list`, `delete` schema commands against Schema Registry |
 | `table_cleanup.py` | CLI | Flink table inventory and selective cleanup |
-| `kafka_client.py` | Library | Confluent Kafka AdminClient helpers (topic listing, metadata) |
 | `drop_tables_manifest.py` | Library | Builds a table-drop manifest from a deployment manifest |
+| `cm_lib/kafka_cluster_admin.py` | Library | Confluent Kafka AdminClient helpers (topic listing, metadata) |
+| `cm_lib/kafka_avro_producer.py` | Library | |
 
 ## Agent Tasks
 

@@ -1,0 +1,37 @@
+{
+  "type": "record",
+  "name": "users",
+  "namespace": "example.com",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "int",
+      "description": "All values are integers (5 rows)"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Mixed content (0% numeric) \u2014 defaulted to string"
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "description": "Mixed content (0% numeric) \u2014 defaulted to string"
+    },
+    {
+      "name": "signup_date",
+      "type": "string",
+      "description": "All values match date/time patterns (5 rows) \u2014 stored as string"
+    },
+    {
+      "name": "active",
+      "type": "boolean",
+      "description": "All values are booleans (5 rows)"
+    },
+    {
+      "name": "score",
+      "type": "float",
+      "description": "All values are floats (5 rows)"
+    }
+  ]
+}

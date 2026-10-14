@@ -6,13 +6,13 @@ Reusable CLI tools and Bob/Claude agent skills for managing Confluent Cloud Flin
 ## Installation
 
 * Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
-* Work from dbt folder
+* Work from repository-root folder
 
 ```bash
 # Install all domains
 uv sync --extra all
 
-# Install a single domain
+# Ot install a single domain
 uv sync --extra flink
 uv sync --extra dbt
 uv sync --extra kafka
@@ -20,7 +20,7 @@ uv sync --extra kafka
 
 ## User Guides
 
-[Read the book format](https://jbcodeforce.github.io/flink-tools-for-agents)
+[Read the book format](https://jbcodeforce.github.io/flink-tools-for-agents) for information about the tools/CLIs and how to use them in Skills. [Read the AGENTS file](./AGENTS.md) to review common instructions to the agents and developers.
 
 ## Configuration
 

@@ -1,0 +1,13 @@
+domains:
+  - path: ./tools
+    permissions: [read, write, edit, find, grep, ls]
+  - path: ./docs
+    permissions: [read, write, edit, find, grep, ls]
+  - path: ./skills
+    permissions: [read, write, edit, find, grep, ls]
+  - path: ./scripts
+    permissions: [read, write, edit, find, grep, ls]
+  - path: ./.bob
+    permissions: [read, find, grep, ls]
+  - path: ./.claude
+    permissions: [read, find, grep, ls]
