@@ -272,3 +272,73 @@ def test_cli_drop_tables_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert result.exit_code == 0
     assert "drop-tables complete." in result.output
     assert recorded["tables"][0].table == "orders"
+
+
+def test_cli_drop_tables_dict_based_lists_groups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = DeployManifest(
+        drop_tables={
+            "drop_c360": ["fct_c360_profile", "dim_account_tx_agg"],
+            "drop_crm": ["fct_crm_summary", "fct_crm_by_segment"],
+        }
+    )
+    _write_manifest(tmp_path, manifest)
+    monkeypatch.setattr(cli, "get_config", lambda: {})
+
+    result = runner.invoke(app, ["--sql-dir", str(tmp_path), "drop-tables"])
+
+    assert result.exit_code == 0
+    assert "Available drop_tables groups:" in result.output
+    assert "drop_c360: 2 table(s)" in result.output
+    assert "drop_crm: 2 table(s)" in result.output
+
+
+def test_cli_drop_tables_dict_based_with_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = DeployManifest(
+        drop_tables={
+            "drop_c360": ["fct_c360_profile", "dim_account_tx_agg"],
+            "drop_crm": ["fct_crm_summary", "fct_crm_by_segment"],
+        }
+    )
+    _write_manifest(tmp_path, manifest)
+    monkeypatch.setattr(cli, "get_config", lambda: {})
+    recorded: dict[str, Any] = {}
+    monkeypatch.setattr(
+        cli,
+        "flink_drop_tables",
+        lambda tables, manifest, config: recorded.update(tables=tables),
+    )
+
+    result = runner.invoke(app, ["--sql-dir", str(tmp_path), "drop-tables", "--group", "drop_c360"])
+
+    assert result.exit_code == 0
+    assert "drop-tables complete. (group: drop_c360)" in result.output
+    assert len(recorded["tables"]) == 2
+    assert recorded["tables"][0].table == "fct_c360_profile"
+    assert recorded["tables"][1].table == "dim_account_tx_agg"
+
+
+def test_cli_drop_tables_dict_based_unknown_group_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = DeployManifest(
+        drop_tables={
+            "drop_c360": ["fct_c360_profile"],
+            "drop_crm": ["fct_crm_summary"],
+        }
+    )
+    _write_manifest(tmp_path, manifest)
+    monkeypatch.setattr(cli, "get_config", lambda: {})
+
+    result = runner.invoke(app, ["--sql-dir", str(tmp_path), "drop-tables", "--group", "drop_unknown"])
+
+    assert result.exit_code == 1
+    assert "Unknown drop_tables group" in result.output
+
+
+def test_cli_drop_tables_flat_list_rejects_group_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = DeployManifest(drop_tables=[DropTableRef(table="orders")])
+    _write_manifest(tmp_path, manifest)
+    monkeypatch.setattr(cli, "get_config", lambda: {})
+
+    result = runner.invoke(app, ["--sql-dir", str(tmp_path), "drop-tables", "--group", "any_group"])
+
+    assert result.exit_code == 1
+    assert "--group requires dict-based drop_tables" in result.output

@@ -47,7 +47,7 @@ class DeployManifest(BaseModel):
     groups: dict[str, list[StatementRef]] = Field(default_factory=dict)
     deploy_all: list[str] = Field(default_factory=list)
     undeploy_all: list[str] = Field(default_factory=list)
-    drop_tables: list[DropTableRef] = Field(default_factory=list)
+    drop_tables: list[DropTableRef] | dict[str, list[str]] = Field(default_factory=list)
     drop_statement_prefix: str | None = None
 
     @model_validator(mode="before")
@@ -58,7 +58,11 @@ class DeployManifest(BaseModel):
 
         groups = data.get("groups") or {}
         drop_tables = data.get("drop_tables", [])
-        if isinstance(drop_tables, list) and drop_tables:
+
+        # If drop_tables is a dict (new format), keep as-is
+        if isinstance(drop_tables, dict):
+            pass  # Keep the dict format
+        elif isinstance(drop_tables, list) and drop_tables:
             first = drop_tables[0]
             if isinstance(first, str):
                 # Legacy flat list: ["table_a", "table_b"]
@@ -117,6 +121,30 @@ class DeployManifest(BaseModel):
         prefix = self.drop_statement_prefix or "drop"
         safe_table = table.replace(".", "-")
         return f"{prefix}-{safe_table}"
+
+    def drop_table_groups(self) -> list[str]:
+        """Return drop table group names if drop_tables is dict-based, else empty list."""
+        if isinstance(self.drop_tables, dict):
+            return sorted(self.drop_tables.keys())
+        return []
+
+    def drop_tables_for_group(self, group: str) -> list[DropTableRef]:
+        """Return DropTableRef list for a specific drop table group.
+
+        If drop_tables is a dict, returns refs for the group.
+        If drop_tables is a flat list and group is 'all', returns all refs.
+        Raises KeyError if group not found.
+        """
+        if isinstance(self.drop_tables, dict):
+            if group not in self.drop_tables:
+                available = sorted(self.drop_tables.keys())
+                raise KeyError(f"Unknown drop_tables group {group!r}; available: {available}")
+            # Convert string list to DropTableRef objects
+            return [DropTableRef(table=t) for t in self.drop_tables[group]]
+        elif group == "all":
+            return self.drop_tables if isinstance(self.drop_tables, list) else []
+        else:
+            raise KeyError(f"drop_tables is not dict-based; cannot query group {group!r}")
 
 
 def load_manifest(manifest_path: Path) -> DeployManifest:

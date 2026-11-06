@@ -370,15 +370,54 @@ def test_deploy_statements_skips_connection_when_all_unchanged(
     deploy_statements(statements, sql_dir=tmp_path, config=CONFIG_FOR_SNAPSHOT)
 
 
+def _stub_running_statements(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
+    monkeypatch.setattr(
+        flink_deploy,
+        "lifecycle_list_statements",
+        lambda conn: {"statements": [{"name": n} for n in names], "count": len(names)},
+    )
+
+
 def test_undeploy_statements_deletes_each(monkeypatch: pytest.MonkeyPatch) -> None:
     deleted: list[str] = []
     monkeypatch.setattr(flink_deploy, "flink_connection", _fake_flink_connection(object()))
     monkeypatch.setattr(flink_deploy, "run_delete", lambda conn, name: deleted.append(name))
+    _stub_running_statements(monkeypatch, [])
 
     statements = [StatementRef(name="a", file="a.sql"), StatementRef(name="b", file="b.sql")]
     undeploy_statements(statements, config={})
 
     assert deleted == ["a", "b"]
+
+
+def test_undeploy_statements_resolves_suffixed_running_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    deleted: list[str] = []
+    monkeypatch.setattr(flink_deploy, "flink_connection", _fake_flink_connection(object()))
+    monkeypatch.setattr(flink_deploy, "run_delete", lambda conn, name: deleted.append(name))
+    _stub_running_statements(
+        monkeypatch,
+        [
+            "dbt-streamhouse-fct-fraud-probe-bc60b3",
+            "dbt-streamhouse-fct-fraud-probe-extra-abc123",
+            "dbt-streamhouse-fct-other-111111",
+        ],
+    )
+
+    statements = [StatementRef(name="dbt-streamhouse-fct-fraud-probe", file="a.sql")]
+    undeploy_statements(statements, config={})
+
+    assert deleted == ["dbt-streamhouse-fct-fraud-probe-bc60b3"]
+
+
+def test_undeploy_statements_prefers_exact_name_and_suffixed(monkeypatch: pytest.MonkeyPatch) -> None:
+    deleted: list[str] = []
+    monkeypatch.setattr(flink_deploy, "flink_connection", _fake_flink_connection(object()))
+    monkeypatch.setattr(flink_deploy, "run_delete", lambda conn, name: deleted.append(name))
+    _stub_running_statements(monkeypatch, ["a", "a-1f2e3d"])
+
+    undeploy_statements([StatementRef(name="a", file="a.sql")], config={})
+
+    assert deleted == ["a", "a-1f2e3d"]
 
 
 def test_undeploy_statements_forgets_ledger_entries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -393,6 +432,7 @@ def test_undeploy_statements_forgets_ledger_entries(monkeypatch: pytest.MonkeyPa
     assert "orders-ddl" in load_state(tmp_path)
 
     monkeypatch.setattr(flink_deploy, "run_delete", lambda conn, name: None)
+    _stub_running_statements(monkeypatch, [])
     undeploy_statements(statements, config=CONFIG_FOR_SNAPSHOT, sql_dir=tmp_path)
 
     assert "orders-ddl" not in load_state(tmp_path)

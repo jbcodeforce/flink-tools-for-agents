@@ -6,10 +6,16 @@ Usage:
   uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update deploy --group all
   uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update undeploy --group all
   uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update drop-tables
+  uv run flink-sql-deploy --sql-dir ../11-puzzles/cart_update drop-tables --group drop_c360
   uv run flink-sql-deploy --sql-dir ../04-joins/cc groups
 
 Each pipeline folder supplies deploy_manifest.json listing statement groups, SQL files,
 undeploy_all order, and drop_tables for full teardown.
+
+drop_tables can be:
+  - A flat list: ["table_a", "table_b"]
+  - A dict of groups: {"drop_c360": ["table1", "table2"], "drop_crm": [...]}
+
 Environment: loads ``DOTENV_FILE`` or ``{repo_root}/.env`` (same convention as the monorepo skills).
 """
 
@@ -58,7 +64,9 @@ def resolve_dotenv_path(repo_root: Path | None = None) -> Path | None:
             path = (root / path).resolve()
     else:
         path = root / ".env"
-    return path if path.is_file() else None
+    path = path if path.is_file() else None
+    print(f"Environment variables from {path}")
+    return path
 
 
 def load_dotenv_file(*, start: Path | None = None) -> bool:
@@ -69,20 +77,17 @@ def load_dotenv_file(*, start: Path | None = None) -> bool:
         p = Path(explicit).expanduser()
         if p.is_file():
             return load_dotenv(p, override=True)
-
-    # 2. ~/.confluent/.env (conventional Confluent Cloud credentials location)
-    default_home = Path("~/.confluent/.env").expanduser()
-    if default_home.is_file():
-        return load_dotenv(default_home, override=True)
-
-    # 3. Repo-root .env (original behaviour)
+    # 2. Repo-root .env (original behaviour)
     try:
         root = find_repo_root(start)
     except FileNotFoundError:
         return False
     path = resolve_dotenv_path(root)
     if path is None:
-        return False
+        # 2. ~/.confluent/.env (conventional Confluent Cloud credentials location)
+        default_home = Path("~/.confluent/.env").expanduser()
+        if default_home.is_file():
+            return load_dotenv(default_home, override=True)
     return load_dotenv(path, override=True)
 
 
@@ -221,15 +226,48 @@ def undeploy(
 
 
 @app.command("drop-tables")
-def drop_tables_command(ctx: typer.Context) -> None:
+def drop_tables_command(
+    ctx: typer.Context,
+    group: str | None = typer.Option(
+        None,
+        "--group",
+        help=(
+            "Drop table group name (for dict-based drop_tables). "
+            "If omitted and drop_tables is dict-based, lists available groups."
+        ),
+    ),
+) -> None:
     """Drop tables listed in manifest drop_tables (no statement deletes)."""
     context: DeployContext = ctx.obj
-    if not context.manifest.drop_tables:
+    manifest = context.manifest
+
+    if not manifest.drop_tables:
         typer.echo("No drop_tables defined in manifest.", err=True)
         raise typer.Exit(code=1)
+
+    # Handle dict-based drop_tables with group selection
+    if isinstance(manifest.drop_tables, dict):
+        if group is None:
+            print("Available drop_tables groups:")
+            for grp in manifest.drop_table_groups():
+                count = len(manifest.drop_tables[grp])
+                print(f"  {grp}: {count} table(s)")
+            raise typer.Exit(code=0)
+        try:
+            tables_to_drop = manifest.drop_tables_for_group(group)
+        except KeyError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+    else:
+        # Legacy flat list
+        if group is not None:
+            typer.echo("--group requires dict-based drop_tables in manifest", err=True)
+            raise typer.Exit(code=1)
+        tables_to_drop = manifest.drop_tables
+
     config = get_config()
-    flink_drop_tables(context.manifest.drop_tables, manifest=context.manifest, config=config)
-    print("drop-tables complete.")
+    flink_drop_tables(tables_to_drop, manifest=manifest, config=config)
+    print(f"drop-tables complete." + (f" (group: {group})" if group else ""))
 
 
 @app.command()

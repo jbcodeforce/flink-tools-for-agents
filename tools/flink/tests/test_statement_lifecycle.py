@@ -130,6 +130,49 @@ def test_list_statements_normalizes_payload() -> None:
     assert result["statements"][1] == {"name": "b", "phase": "COMPLETED", "detail": "done"}
 
 
+def test_list_statements_follows_next_page_token() -> None:
+    pages = {
+        None: {
+            "data": [{"name": "a", "status": {"phase": "RUNNING"}}],
+            "metadata": {"next": "https://flink.example/sql/v1/statements?page_size=1&page_token=tok2"},
+        },
+        "tok2": {
+            "data": [{"name": "b", "status": {"phase": "RUNNING"}}],
+            "metadata": {"next": "https://flink.example/sql/v1/statements?page_size=1&page_token=tok3"},
+        },
+        "tok3": {"data": [{"name": "c", "status": {"phase": "RUNNING"}}], "metadata": {}},
+    }
+    calls: list[dict[str, Any]] = []
+
+    def _request(path: str, params: dict[str, Any] | None = None) -> Any:
+        calls.append(dict(params or {}))
+        payload = pages[(params or {}).get("page_token")]
+        return SimpleNamespace(json=lambda: payload)
+
+    result = list_statements(SimpleNamespace(_request=_request), page_size=1)
+
+    assert [s["name"] for s in result["statements"]] == ["a", "b", "c"]
+    assert result["count"] == 3
+    assert [c.get("page_token") for c in calls] == [None, "tok2", "tok3"]
+
+
+def test_list_statements_stops_on_repeated_page_token() -> None:
+    payload = {
+        "data": [{"name": "a", "status": {"phase": "RUNNING"}}],
+        "metadata": {"next": "https://flink.example/sql/v1/statements?page_token=same"},
+    }
+    calls: list[int] = []
+
+    def _request(path: str, params: dict[str, Any] | None = None) -> Any:
+        calls.append(1)
+        return SimpleNamespace(json=lambda: payload)
+
+    result = list_statements(SimpleNamespace(_request=_request))
+
+    assert len(calls) == 2
+    assert result["count"] == 2
+
+
 def test_list_statements_handles_non_list_payload() -> None:
     conn = SimpleNamespace(_request=lambda path, params=None: SimpleNamespace(json=lambda: {"data": "oops"}))
     result = list_statements(conn)

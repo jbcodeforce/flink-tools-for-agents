@@ -34,6 +34,7 @@ from tools.flink.cc_deploy.statement_lifecycle import (
     StatementLifecycleError,
     classify_sql,
     delete_statement as lifecycle_delete_statement,
+    list_statements as lifecycle_list_statements,
     statement_properties,
     submit_statement as lifecycle_submit_statement,
     wait_for_phase as lifecycle_wait_for_phase,
@@ -57,7 +58,7 @@ def get_config() -> dict[str, str]:
         or os.environ.get("ENV_ID")
     )
     pool_id = os.environ.get("FLINK_COMPUTE_POOL_ID") or os.environ.get("CPOOLID")
-    database = os.environ.get("FLINK_DATABASE_NAME")
+    database = os.environ.get("FLINK_DATABASE")
     cloud = os.environ.get("CLOUD_PROVIDER") or "aws"
     region = os.environ.get("CLOUD_REGION") or "us-west-2"
     endpoint = os.environ.get("FLINK_BASE_URL") or os.environ.get("FLINK_REST_ENDPOINT")
@@ -72,7 +73,7 @@ def get_config() -> dict[str, str]:
     if not pool_id:
         missing.append("FLINK_COMPUTE_POOL_ID")
     if not database:
-        missing.append("FLINK_DATABASE_NAME")
+        missing.append("FLINK_DATABASE")
 
     if missing:
         print("Missing required environment variables:", ", ".join(missing), file=sys.stderr)
@@ -84,12 +85,13 @@ def get_config() -> dict[str, str]:
         "ORGANIZATION_ID": org_id,
         "ENVIRONMENT_ID": env_id,
         "FLINK_COMPUTE_POOL_ID": pool_id,
-        "FLINK_DATABASE_NAME": database,
+        "FLINK_DATABASE": database,
         "CLOUD_PROVIDER": cloud,
         "CLOUD_REGION": region,
     }
     if endpoint:
         cfg["FLINK_REST_ENDPOINT"] = endpoint.rstrip("/")
+    print(cfg)
     return cfg
 
 
@@ -108,7 +110,7 @@ def flink_connection(config: dict[str, str], *, user_agent: str = DEFAULT_USER_A
         "environment_id": config["ENVIRONMENT_ID"],
         "compute_pool_id": config["FLINK_COMPUTE_POOL_ID"],
         "organization_id": config["ORGANIZATION_ID"],
-        "database": config["FLINK_DATABASE_NAME"],
+        "database": config["FLINK_DATABASE"],
         "http_user_agent": user_agent,
     }
     if config.get("FLINK_REST_ENDPOINT"):
@@ -232,6 +234,22 @@ def deploy_statements(
             save_state(sql_dir, state)
 
 
+def resolve_running_statement_names(conn, name: str) -> list[str]:
+    """
+    Return the deployed statement names matching manifest *name*.
+
+    Some tools (e.g. dbt-confluent) append a ``-<suffix>`` token to the manifest
+    name (``dbt-x-fct-probe`` -> ``dbt-x-fct-probe-bc60b3``). A deployed statement
+    matches when its name equals *name* or is *name* followed by a single
+    hyphen-free suffix, so ``dbt-x-fct`` does not match ``dbt-x-fct-probe-bc60b3``.
+    Falls back to ``[name]`` when nothing matches so the delete reports "not found".
+    """
+    deployed = [s["name"] for s in lifecycle_list_statements(conn)["statements"] if s.get("name")]
+    prefix = f"{name}-"
+    matches = [d for d in deployed if d == name or (d.startswith(prefix) and "-" not in d[len(prefix):])]
+    return matches or [name]
+
+
 def undeploy_statements(
     statements: list[StatementRef],
     *,
@@ -239,11 +257,17 @@ def undeploy_statements(
     user_agent: str = DEFAULT_USER_AGENT,
     sql_dir: Path | None = None,
 ) -> None:
-    """Delete each statement, forgetting it from the deploy ledger for *sql_dir* (if given)."""
+    """
+    Delete each statement, forgetting it from the deploy ledger for *sql_dir* (if given).
+
+    The manifest name is resolved against running statements, so a deployed name with
+    a generated suffix (``<name>-bc60b3``) is deleted too.
+    """
     state = load_state(sql_dir) if sql_dir else {}
     with flink_connection(config, user_agent=user_agent) as conn:
         for stmt in statements:
-            run_delete(conn, stmt.name)
+            for real_name in resolve_running_statement_names(conn, stmt.name):
+                run_delete(conn, real_name)
             if sql_dir:
                 forget_deployed(state, stmt.name)
     if sql_dir:
@@ -280,6 +304,7 @@ def drop_tables(
         return
     print("Dropping tables...")
     with flink_connection(config, user_agent=user_agent) as conn:
+        print(f"Will use: {conn.compute_pool_id}")
         for ref in tables:
             statement_name = drop_statement_name_for_table(statement_prefix, ref.table)
             run_drop_table(conn, config, ref.table, statement_name, materialized=ref.materialized)

@@ -11,6 +11,7 @@ import os
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from confluent_sql.exceptions import OperationalError, StatementNotFoundError
 
@@ -94,28 +95,45 @@ def statement_status(conn: Any, statement_name: str) -> dict[str, Any]:
     }
 
 
+def _next_page_token(payload: Any) -> str | None:
+    """Extract ``page_token`` from ``metadata.next`` of a REST list response, if any."""
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    next_url = metadata.get("next") if isinstance(metadata, dict) else None
+    if not next_url:
+        return None
+    tokens = parse_qs(urlparse(next_url).query).get("page_token")
+    return tokens[0] if tokens and tokens[0] else None
+
+
 def list_statements(conn: Any, page_size: int = 50) -> dict[str, Any]:
-    """List Flink statements (first REST page)."""
-    resp = conn._request(  # noqa: SLF001
-        "/statements",
-        params={"page_size": page_size},
-    )
-    payload = resp.json() if hasattr(resp, "json") else {}
-    items = payload.get("data") if isinstance(payload, dict) else payload
-    if not isinstance(items, list):
-        items = []
+    """List all Flink statements, following ``metadata.next`` paging links."""
     normalized = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        status = item.get("status") or {}
-        normalized.append(
-            {
-                "name": item.get("name") or item.get("statementName") or "",
-                "phase": status.get("phase", "UNKNOWN"),
-                "detail": status.get("detail", ""),
-            }
-        )
+    params: dict[str, Any] = {"page_size": page_size}
+    seen_tokens: set[str] = set()
+    while True:
+        resp = conn._request("/statements", params=dict(params))  # noqa: SLF001
+        payload = resp.json() if hasattr(resp, "json") else {}
+        items = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status") or {}
+            normalized.append(
+                {
+                    "name": item.get("name") or item.get("statementName") or "",
+                    "phase": status.get("phase", "UNKNOWN"),
+                    "detail": status.get("detail", ""),
+                }
+            )
+        token = _next_page_token(payload)
+        if token is None or token in seen_tokens:
+            break
+        seen_tokens.add(token)
+        params["page_token"] = token
     return {"statements": normalized, "count": len(normalized)}
 
 
