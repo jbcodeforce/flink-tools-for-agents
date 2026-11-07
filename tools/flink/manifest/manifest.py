@@ -31,6 +31,8 @@ _CREATE_MATERIALIZED_TABLE_RE = re.compile(
 class StatementRef(BaseModel):
     name: str
     file: str
+    #: True when the statement creates a materialized table (CREATE [OR ALTER] MATERIALIZED TABLE).
+    materialized_table: bool = False
 
 
 class DropTableRef(BaseModel):
@@ -47,7 +49,7 @@ class DeployManifest(BaseModel):
     groups: dict[str, list[StatementRef]] = Field(default_factory=dict)
     deploy_all: list[str] = Field(default_factory=list)
     undeploy_all: list[str] = Field(default_factory=list)
-    drop_tables: list[DropTableRef] | dict[str, list[str]] = Field(default_factory=list)
+    drop_tables: list[DropTableRef] | dict[str, list[DropTableRef]] = Field(default_factory=list)
     drop_statement_prefix: str | None = None
 
     @model_validator(mode="before")
@@ -59,9 +61,15 @@ class DeployManifest(BaseModel):
         groups = data.get("groups") or {}
         drop_tables = data.get("drop_tables", [])
 
-        # If drop_tables is a dict (new format), keep as-is
+        # Grouped format: {"group": ["t", {"table": "t2", "materialized": true}]}
         if isinstance(drop_tables, dict):
-            pass  # Keep the dict format
+            data = {
+                **data,
+                "drop_tables": {
+                    grp: [{"table": e} if isinstance(e, str) else e for e in entries]
+                    for grp, entries in drop_tables.items()
+                },
+            }
         elif isinstance(drop_tables, list) and drop_tables:
             first = drop_tables[0]
             if isinstance(first, str):
@@ -128,6 +136,12 @@ class DeployManifest(BaseModel):
             return sorted(self.drop_tables.keys())
         return []
 
+    def all_drop_tables(self) -> list[DropTableRef]:
+        """Return every drop table ref, flattening groups in manifest order."""
+        if isinstance(self.drop_tables, dict):
+            return [ref for refs in self.drop_tables.values() for ref in refs]
+        return list(self.drop_tables)
+
     def drop_tables_for_group(self, group: str) -> list[DropTableRef]:
         """Return DropTableRef list for a specific drop table group.
 
@@ -139,8 +153,7 @@ class DeployManifest(BaseModel):
             if group not in self.drop_tables:
                 available = sorted(self.drop_tables.keys())
                 raise KeyError(f"Unknown drop_tables group {group!r}; available: {available}")
-            # Convert string list to DropTableRef objects
-            return [DropTableRef(table=t) for t in self.drop_tables[group]]
+            return list(self.drop_tables[group])
         elif group == "all":
             return self.drop_tables if isinstance(self.drop_tables, list) else []
         else:
@@ -314,7 +327,13 @@ def create_manifest_from_folder(
         rel = path.relative_to(sql_dir).as_posix()
         group = _classify_sql_file(path.name)
         all_sql_files.append(path)
-        entry = StatementRef(name=_statement_name(prefix, group, rel), file=rel)
+        entry = StatementRef(
+            name=_statement_name(prefix, group, rel),
+            file=rel,
+            materialized_table=bool(
+                _CREATE_MATERIALIZED_TABLE_RE.search(path.read_text(encoding="utf-8"))
+            ),
+        )
         groups.setdefault(group, []).append(entry)
 
     deploy_all = _default_deploy_all(groups)
@@ -446,7 +465,8 @@ def _read_dbt_manifest_nodes(project_root: Path) -> list[dict[str, Any]]:
     """Read ``target/manifest.json`` and return a normalised node list.
 
     Each entry is a dict with keys:
-    ``name``, ``path``, ``resource_type``, ``statement_name_override`` (str | None).
+    ``name``, ``path``, ``resource_type``, ``statement_name_override`` (str | None),
+    ``is_materialized_table`` (bool, True for ``materialized='materialized_table'``).
 
     Raises :class:`FileNotFoundError` with a helpful message when the artifact is
     missing (user needs to run ``dbt run`` or ``dbt compile`` first).
@@ -471,6 +491,7 @@ def _read_dbt_manifest_nodes(project_root: Path) -> list[dict[str, Any]]:
                 "path": node_data.get("path", ""),
                 "resource_type": resource_type,
                 "statement_name_override": statement_name_override,
+                "is_materialized_table": config.get("materialized") == "materialized_table",
             }
         )
     return nodes
@@ -557,22 +578,28 @@ def create_manifest_from_dbt_folder(
             raw_name = f"{prefix}{project_name}-{node['name']}"
         statement_name = _sanitize(raw_name)
         groups.setdefault(group, []).append(
-            StatementRef(name=statement_name, file="_noop")
+            StatementRef(
+                name=statement_name,
+                file="_noop",
+                materialized_table=node["is_materialized_table"],
+            )
         )
 
     deploy_all = [g for g in _DBT_DEPLOY_ORDER if g in groups]
     undeploy_all = [g for g in _DBT_UNDEPLOY_ORDER if g in groups]
 
     # drop_tables: model/seed tables in undeploy order (dependents first), then raw sources.
-    # dbt models are never materialized tables.
-    group_to_model_names: dict[str, list[str]] = {}
+    # Models configured with materialized='materialized_table' need DROP MATERIALIZED TABLE.
+    group_to_model_refs: dict[str, list[DropTableRef]] = {}
     for node in nodes:
         grp = _dbt_group_for_node(node["path"], node["resource_type"])
-        group_to_model_names.setdefault(grp, []).append(node["name"])
+        group_to_model_refs.setdefault(grp, []).append(
+            DropTableRef(table=node["name"], materialized=node["is_materialized_table"])
+        )
 
     drop_tables: list[DropTableRef] = []
     for grp in undeploy_all:
-        drop_tables.extend(DropTableRef(table=n) for n in group_to_model_names.get(grp, []))
+        drop_tables.extend(group_to_model_refs.get(grp, []))
 
     # Append raw source tables (leaf inputs, dropped last)
     raw_sources = _read_dbt_source_tables(project_root)

@@ -225,7 +225,7 @@ def undeploy(
     print(f"undeploy --group {group} complete.")
 
 
-@app.command("drop-tables")
+@app.command("drop_tables")
 def drop_tables_command(
     ctx: typer.Context,
     group: str | None = typer.Option(

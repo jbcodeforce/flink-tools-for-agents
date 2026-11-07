@@ -220,6 +220,57 @@ def test_read_dbt_manifest_nodes_explicit_statement_name(tmp_path: Path) -> None
     assert nodes[0]["statement_name_override"] == "fw_crm_customers_pk"
 
 
+def test_read_dbt_manifest_nodes_flags_materialized_table(tmp_path: Path) -> None:
+    _make_dbt_manifest(
+        tmp_path,
+        {
+            "model.proj.fct_mt": {
+                "name": "fct_mt",
+                "path": "facts/fct_mt.sql",
+                "resource_type": "model",
+                "config": {"materialized": "materialized_table"},
+            },
+            "model.proj.fct_st": {
+                "name": "fct_st",
+                "path": "facts/fct_st.sql",
+                "resource_type": "model",
+                "config": {"materialized": "streaming_table"},
+            },
+        },
+    )
+    flags = {n["name"]: n["is_materialized_table"] for n in _read_dbt_manifest_nodes(tmp_path)}
+    assert flags == {"fct_mt": True, "fct_st": False}
+
+
+def test_create_manifest_from_dbt_folder_marks_materialized_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    (tmp_path / "dbt_project.yml").write_text("name: proj\nprofile: cc_flink\n")
+    _make_dbt_manifest(
+        tmp_path,
+        {
+            "model.proj.fct_mt": {
+                "name": "fct_mt",
+                "path": "facts/fct_mt.sql",
+                "resource_type": "model",
+                "config": {"materialized": "materialized_table"},
+            },
+            "model.proj.src_st": {
+                "name": "src_st",
+                "path": "sources/src_st.sql",
+                "resource_type": "model",
+                "config": {"materialized": "streaming_table"},
+            },
+        },
+    )
+    manifest = create_manifest_from_dbt_folder(tmp_path)
+    by_table = {ref.table: ref.materialized for ref in manifest.drop_tables}
+    assert by_table == {"fct_mt": True, "src_st": False}
+    flags = {s.name: s.materialized_table for refs in manifest.groups.values() for s in refs}
+    assert sorted(flags.values()) == [False, True]
+
+
 def test_read_dbt_manifest_nodes_missing_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="dbt manifest not found"):
         _read_dbt_manifest_nodes(tmp_path)

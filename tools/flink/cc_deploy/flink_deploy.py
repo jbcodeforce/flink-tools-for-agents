@@ -348,7 +348,7 @@ def full_undeploy(
         print("Stopping and deleting Flink statements...")
         undeploy_statements(statements, config=config, user_agent=manifest.user_agent, sql_dir=sql_dir)
     if drop_tables_after and manifest.drop_tables:
-        drop_tables(manifest.drop_tables, manifest=manifest, config=config)
+        drop_tables(manifest.all_drop_tables(), manifest=manifest, config=config)
 
 
 OutputFormat = Literal["table", "json", "csv"]

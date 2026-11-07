@@ -49,6 +49,52 @@ def test_drop_tables_for_group_with_dict_based() -> None:
     assert refs[1].table == "dim_account_tx_agg"
 
 
+def test_drop_tables_dict_accepts_object_entries_with_materialized() -> None:
+    manifest = DeployManifest.model_validate(
+        {
+            "drop_tables": {
+                "drop_fraud": [
+                    {"table": "fct_fraud_probe", "materialized": True},
+                    {"table": "dim_x", "materialized": False},
+                    "plain_table",
+                ],
+            }
+        }
+    )
+    refs = manifest.drop_tables_for_group("drop_fraud")
+    assert [(r.table, r.materialized) for r in refs] == [
+        ("fct_fraud_probe", True),
+        ("dim_x", False),
+        ("plain_table", False),
+    ]
+
+
+def test_all_drop_tables_flattens_groups() -> None:
+    manifest = DeployManifest.model_validate(
+        {"drop_tables": {"a": [{"table": "t1", "materialized": True}], "b": ["t2"]}}
+    )
+    assert [(r.table, r.materialized) for r in manifest.all_drop_tables()] == [("t1", True), ("t2", False)]
+
+
+def test_statement_ref_materialized_table_defaults_false_and_roundtrips() -> None:
+    manifest = DeployManifest.model_validate(
+        {"groups": {"ddl": [{"name": "a", "file": "a.sql", "materialized_table": True}, {"name": "b", "file": "b.sql"}]}}
+    )
+    assert [s.materialized_table for s in manifest.groups["ddl"]] == [True, False]
+
+
+def test_create_manifest_from_folder_flags_materialized_table_statements(tmp_path: Path) -> None:
+    sql_dir = tmp_path / "demo"
+    sql_dir.mkdir()
+    (sql_dir / "ddl.mt.sql").write_text("CREATE MATERIALIZED TABLE mt AS SELECT 1;", encoding="utf-8")
+    (sql_dir / "ddl.t.sql").write_text("CREATE TABLE t (id INT);", encoding="utf-8")
+
+    manifest = create_manifest_from_folder(sql_dir)
+
+    flags = {s.file: s.materialized_table for s in manifest.groups["ddl"]}
+    assert flags == {"ddl.mt.sql": True, "ddl.t.sql": False}
+
+
 def test_drop_tables_for_group_returns_drop_table_refs() -> None:
     manifest = DeployManifest(
         drop_tables={
