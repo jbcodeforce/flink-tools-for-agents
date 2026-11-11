@@ -24,7 +24,7 @@ uv sync --extra all --extra dev
 
 # Verify entry points
 uv run flink-sql-deploy --help
-uv run flink-sql-manifest --help
+uv run generate-manifest --help
 uv run flink-sql-migrate-dbt --help
 uv run sl-dbt --help
 uv run flink-sql-cleanup --help
