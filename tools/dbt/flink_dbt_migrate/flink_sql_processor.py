@@ -66,6 +66,7 @@ class DdlTable:
     distributed_by_buckets: int | None = None
     with_options: dict[str, str] = field(default_factory=dict)
     primary_key: list[str] = field(default_factory=list)
+    watermark: str | None = None
 
 
 
@@ -266,6 +267,7 @@ def _parse_column_definition(defn: str) -> DdlColumn | None:
 
     not_null = bool(re.search(r"\bNOT\s+NULL\b", stripped, re.IGNORECASE))
     type_part = re.sub(r"\bNOT\s+NULL\b", "", stripped, flags=re.IGNORECASE).strip()
+    type_part = re.sub(r"\bPRIMARY\s+KEY\s*(?:NOT\s+ENFORCED)?\b", "", type_part, flags=re.IGNORECASE).strip()
 
     # Allow zero or more whitespace between backtick-quoted name and type
     # e.g. `col_name`STRING (no space) is valid in some DDL files
@@ -297,18 +299,17 @@ def _parse_with_options(sql: str) -> dict[str, str]:
 
 
 def _parse_primary_key(columns_body: str) -> list[str]:
-    match = re.search(
+    keys: list[str] = []
+    for match in re.finditer(
         r"PRIMARY\s+KEY\s*\(([^)]+)\)",
         columns_body,
         re.IGNORECASE,
-    )
-    if not match:
-        return []
-    return [
-        strip_identifier(part.strip())
-        for part in match.group(1).split(",")
-        if part.strip()
-    ]
+    ):
+        for part in match.group(1).split(","):
+            cleaned = strip_identifier(part.strip())
+            if cleaned and cleaned not in keys:
+                keys.append(cleaned)
+    return keys
 
 
 # ==========================
@@ -362,24 +363,37 @@ def parse_ddl(sql: str) -> DdlTable:
     columns_body = _strip_sql_comments(columns_body)
 
     columns: list[DdlColumn] = []
+    watermark = None
     for definition in _split_definitions(columns_body):
+        stripped_def = _strip_sql_comments(definition).strip()
+        if re.match(r"WATERMARK\s+FOR\b", stripped_def, re.IGNORECASE):
+            watermark = " ".join(stripped_def.split())
         column = _parse_column_definition(definition)
         if column is not None:
             columns.append(column)
 
     distributed_match = re.search(
-        r"DISTRIBUTED\s+BY\s+HASH\s*\(([^)]+)\)(?:\s+INTO\s+(\d+)\s+BUCKETS)?",
+        r"DISTRIBUTED\s+BY\s+(?:(?:HASH|RANGE)\s*)?(?:\(([^)]+)\)|(`[^`]+`|\w+))(?:\s+INTO\s+(\d+)\s+BUCKETS)?",
         sql,
         re.IGNORECASE,
     )
-    distributed_by = (
-        distributed_match.group(1).strip() if distributed_match else None
-    )
-    distributed_by_buckets = (
-        int(distributed_match.group(2))
-        if distributed_match and distributed_match.group(2)
-        else None
-    )
+    distributed_by = None
+    distributed_by_buckets = None
+    if distributed_match:
+        dist_cols = distributed_match.group(1) or distributed_match.group(2)
+        distributed_by = dist_cols.strip() if dist_cols else None
+        if distributed_match.group(3):
+            distributed_by_buckets = int(distributed_match.group(3))
+
+    primary_keys = _parse_primary_key(columns_body)
+    for definition in _split_definitions(columns_body):
+        stripped = re.sub(r"--.*$", "", definition).strip()
+        if re.search(r"\bPRIMARY\s+KEY\b", stripped, re.IGNORECASE) and not re.match(r"(?:CONSTRAINT\b|PRIMARY\s+KEY\b)", stripped, re.IGNORECASE):
+            name_m = re.match(r"(`[^`]+`|\w+)", stripped)
+            if name_m:
+                col_name = strip_identifier(name_m.group(1))
+                if col_name not in primary_keys:
+                    primary_keys.append(col_name)
 
     return DdlTable(
         table_name=table_name,
@@ -387,7 +401,8 @@ def parse_ddl(sql: str) -> DdlTable:
         distributed_by=distributed_by,
         distributed_by_buckets=distributed_by_buckets,
         with_options=_parse_with_options(sql),
-        primary_key=_parse_primary_key(columns_body),
+        primary_key=primary_keys,
+        watermark=watermark,
     )
 
 

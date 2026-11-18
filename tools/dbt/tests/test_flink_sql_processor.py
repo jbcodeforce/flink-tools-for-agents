@@ -387,9 +387,48 @@ class TestParseDdl:
         table = parse_ddl(_DISTRIBUTED_DDL)
         assert table.distributed_by == "event_id"
 
+    def test_distributed_by_customer_id_into_2_buckets(self):
+        ddl = """
+        CREATE TABLE customers (
+            customer_id INT NOT NULL,
+            name STRING,
+            PRIMARY KEY (customer_id) NOT ENFORCED
+        ) DISTRIBUTED BY HASH(customer_id) INTO 2 BUCKETS;
+        """
+        table = parse_ddl(ddl)
+        assert table.distributed_by == "customer_id"
+        assert table.distributed_by_buckets == 2
+        assert table.primary_key == ["customer_id"]
+
+    def test_distributed_by_without_hash_keyword(self):
+        ddl = """
+        CREATE TABLE customers (
+            customer_id INT NOT NULL,
+            name STRING,
+            PRIMARY KEY (customer_id) NOT ENFORCED
+        ) DISTRIBUTED BY (customer_id) INTO 2 BUCKETS;
+        """
+        table = parse_ddl(ddl)
+        assert table.distributed_by == "customer_id"
+        assert table.distributed_by_buckets == 2
+        assert table.primary_key == ["customer_id"]
+
     def test_no_distributed_by(self):
         table = parse_ddl(_SIMPLE_DDL)
         assert table.distributed_by is None
+
+    def test_watermark_parsing(self):
+        ddl = """
+        CREATE TABLE raw_transactions (
+            txn_id STRING,
+            `timestamp` TIMESTAMP(3),
+            WATERMARK FOR `timestamp` AS `timestamp` - INTERVAL '5' SECONDS
+        ) DISTRIBUTED BY HASH(`txn_id`) INTO 6 BUCKETS;
+        """
+        table = parse_ddl(ddl)
+        assert table.watermark == "WATERMARK FOR `timestamp` AS `timestamp` - INTERVAL '5' SECONDS"
+        assert table.distributed_by == "`txn_id`"
+        assert table.distributed_by_buckets == 6
 
     def test_if_not_exists(self):
         table = parse_ddl(_IF_NOT_EXISTS_DDL)

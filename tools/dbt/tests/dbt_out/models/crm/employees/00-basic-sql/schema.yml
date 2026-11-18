@@ -5,5 +5,9 @@ models:
   columns:
   - name: dept_id
     data_type: INT
+    constraints:
+    - type: not_null
+    - type: primary_key
+      expression: not enforced
   - name: emp_count
     data_type: BIGINT

@@ -48,7 +48,7 @@ def test_avro_generation_and_validation()-> None:
     assert dict_of['fields'][0]['type'] == 'int'
     errors = validate_avro_schema(dict_of)
     assert len(errors) == 0
-        write_schema(dict_of, _TEST_FOLDER / "from_csv" / "schemas" / "users.avsc")
+    write_schema(dict_of, _TEST_FOLDER / "from_csv" / "schemas" / "users.avsc")
 
 
 def test_pass_sql_as_parameter():

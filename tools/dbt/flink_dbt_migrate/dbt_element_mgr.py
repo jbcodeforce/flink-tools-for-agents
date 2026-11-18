@@ -79,9 +79,11 @@ def format_config_block(
         dist_keys = parse_distributed_by_keys(ddl.distributed_by)
         cols_repr = "[" + ", ".join(f"'{c}'" for c in dist_keys) + "]"
         dist_lines = ["    distributed_by={"]
-        dist_lines.append(f"        'columns': {cols_repr},")
         if ddl.distributed_by_buckets is not None:
+            dist_lines.append(f"        'columns': {cols_repr},")
             dist_lines.append(f"        'buckets': {ddl.distributed_by_buckets}")
+        else:
+            dist_lines.append(f"        'columns': {cols_repr}")
         dist_lines.append("    }")
         config_items.append("\n".join(dist_lines))
 
@@ -184,22 +186,30 @@ def build_model_schema_entry(
         if source_filename
         else f"Migrated Flink model for {ddl.table_name}"
     )
-    dist_keys = set(parse_distributed_by_keys(ddl.distributed_by))
+    key_cols = set(ddl.primary_key) | set(parse_distributed_by_keys(ddl.distributed_by))
     columns = []
     for column in ddl.columns:
         col_dict: dict = {
             "name": column.name,
             "data_type": flink_type_to_dbt(column.flink_type),
         }
-        if column.name in dist_keys:
+        if column.name in key_cols:
             col_dict["constraints"] = default_key_constraints()
         columns.append(col_dict)
 
-    return {
+    entry: dict = {
         "name": model_name,
         "description": description,
-        "columns": columns,
     }
+    if ddl.watermark:
+        entry["constraints"] = [
+            {
+                "type": "custom",
+                "expression": ddl.watermark,
+            }
+        ]
+    entry["columns"] = columns
+    return entry
 
 
 def load_schema_yml(path: Path) -> dict:
@@ -235,6 +245,16 @@ def merge_model_schema(
     else:
         existing = data["models"][index]
         existing.setdefault("description", model_entry.get("description"))
+        if "constraints" in model_entry:
+            if "constraints" not in existing:
+                existing["constraints"] = model_entry["constraints"]
+            else:
+                existing_exprs = {
+                    c.get("expression") for c in existing["constraints"] if isinstance(c, dict)
+                }
+                for c in model_entry["constraints"]:
+                    if isinstance(c, dict) and c.get("expression") not in existing_exprs:
+                        existing["constraints"].append(c)
         existing_columns = {
             column["name"]: column for column in existing.setdefault("columns", [])
         }
@@ -269,7 +289,10 @@ def emit_schema_yml(
     source_filename: str | None = None,
     force: bool = False,
 ) -> str:
-    data = load_schema_yml(target_dir / SCHEMA_YML_NAME)
+    schema_path = target_dir / SCHEMA_YML_NAME
+    if not schema_path.exists() and (target_dir / "schema.yaml").exists():
+        schema_path = target_dir / "schema.yaml"
+    data = load_schema_yml(schema_path)
     model_entry = build_model_schema_entry(
         model_name,
         ddl,

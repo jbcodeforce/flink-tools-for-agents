@@ -74,6 +74,8 @@ def _make_ddl(
     distributed_by: str | None = "order_id",
     distributed_by_buckets: int | None = 4,
     with_options: dict[str, str] | None = None,
+    primary_key: list[str] | None = None,
+    watermark: str | None = None,
 ) -> DdlTable:
     cols = columns or [("order_id", "STRING"), ("amount", "DECIMAL(10, 2)")]
     return DdlTable(
@@ -82,6 +84,8 @@ def _make_ddl(
         distributed_by=distributed_by,
         distributed_by_buckets=distributed_by_buckets,
         with_options=with_options or {},
+        primary_key=primary_key or [],
+        watermark=watermark,
     )
 
 
@@ -127,6 +131,15 @@ def test_format_config_block_includes_distributed_by() -> None:
     assert "distributed_by={" in result
     assert "'columns': ['order_id']" in result
     assert "'buckets': 4" in result
+
+
+def test_format_config_block_distributed_by_customer_id_buckets_2() -> None:
+    ddl = _make_ddl(distributed_by="customer_id", distributed_by_buckets=2)
+    result = format_config_block(ddl)
+
+    assert "distributed_by={" in result
+    assert "'columns': ['customer_id']," in result
+    assert "'buckets': 2" in result
 
 
 def test_format_config_block_includes_with_options() -> None:
@@ -986,6 +999,40 @@ def test_build_model_schema_entry_adds_constraints_for_distributed_by() -> None:
         {"type": "primary_key", "expression": "not enforced"},
     ]
     assert "constraints" not in col_map["val"]
+
+
+def test_build_model_schema_entry_adds_constraints_for_primary_key() -> None:
+    ddl = _make_ddl(
+        columns=[("customer_id", "INT"), ("name", "STRING")],
+        primary_key=["customer_id"],
+        distributed_by=None,
+    )
+    entry = build_model_schema_entry("customers", ddl)
+
+    col_map = {c["name"]: c for c in entry["columns"]}
+    assert "constraints" in col_map["customer_id"]
+    assert col_map["customer_id"]["constraints"] == [
+        {"type": "not_null"},
+        {"type": "primary_key", "expression": "not enforced"},
+    ]
+    assert "constraints" not in col_map["name"]
+
+
+def test_build_model_schema_entry_adds_watermark_model_constraint() -> None:
+    ddl = _make_ddl(
+        columns=[("order_id", "INT"), ("order_time", "TIMESTAMP(3)")],
+        primary_key=["order_id"],
+        watermark="WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND",
+    )
+    entry = build_model_schema_entry("orders", ddl)
+
+    assert "constraints" in entry
+    assert entry["constraints"] == [
+        {
+            "type": "custom",
+            "expression": "WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND",
+        }
+    ]
 
 
 def test_merge_model_schema_merges_constraints_if_missing() -> None:
